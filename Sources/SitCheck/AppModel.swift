@@ -75,6 +75,9 @@ final class AppModel: ObservableObject {
     private var breathOffTask: Task<Void, Never>?
     private var screenLocked = false
     private var observers: [NSObjectProtocol] = []
+    /// App Nap으로 타이머가 몇 분씩 밀리면 자리 비움을 놓치므로 끈다 (시스템 잠자기는 허용).
+    private let activity = ProcessInfo.processInfo.beginActivity(
+        options: .userInitiatedAllowingIdleSystemSleep, reason: "착석 시간 측정")
 
     static let tickInterval: TimeInterval = 5
     static let breathSignalSeconds: UInt64 = 60

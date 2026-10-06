@@ -11,13 +11,13 @@ public struct SitBout: Equatable, Sendable {
 ///
 /// 주기적으로 `tick(now:idleSeconds:)`를 호출한다. 유휴 시간이 임계값 이상이면
 /// 마지막 입력 시각에 구간을 닫는다. 화면 잠금·잠자기는 `markAway(at:)`로 알린다.
+/// 틱 간격이 벌어진 것만으로는 자리 비움으로 보지 않는다 (판단은 유휴 시간과 잠금·잠자기 알림으로만 한다).
 public struct SitTracker: Sendable {
     public var awayThreshold: TimeInterval
     /// 이보다 짧은 구간은 기록하지 않는다.
     public var minimumBout: TimeInterval = 60
 
     public private(set) var boutStart: Date?
-    private var lastTick: Date?
 
     public init(awayThreshold: TimeInterval) {
         self.awayThreshold = awayThreshold
@@ -33,23 +33,14 @@ public struct SitTracker: Sendable {
     /// 닫힌 구간이 있으면 반환한다 (저장 대상).
     @discardableResult
     public mutating func tick(now: Date, idleSeconds: TimeInterval) -> SitBout? {
-        var closed: SitBout?
-
-        // 앱이 멈춰 있던 동안(잠자기 등) 틱이 끊겼다면 그 사이는 자리 비움으로 본다.
-        if let lastTick, now.timeIntervalSince(lastTick) >= awayThreshold, boutStart != nil {
-            closed = close(at: lastTick)
-        }
-        lastTick = now
-
         let lastInput = now.addingTimeInterval(-max(0, idleSeconds))
         if idleSeconds >= awayThreshold {
-            if boutStart != nil {
-                closed = close(at: lastInput) ?? closed
-            }
-        } else if boutStart == nil {
+            return close(at: lastInput)
+        }
+        if boutStart == nil {
             boutStart = lastInput
         }
-        return closed
+        return nil
     }
 
     /// 화면 잠금, 잠자기 등 확실한 자리 비움.
@@ -64,7 +55,6 @@ public struct SitTracker: Sendable {
     public mutating func restart(at now: Date) -> SitBout? {
         let closed = boutStart != nil ? close(at: now) : nil
         boutStart = now
-        lastTick = now
         return closed
     }
 

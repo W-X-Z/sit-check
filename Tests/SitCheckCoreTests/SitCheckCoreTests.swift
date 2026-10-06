@@ -27,14 +27,20 @@ final class SitTrackerTests: XCTestCase {
         XCTAssertLessThan(tracker.sittingSeconds(at: at(30)), 5)
     }
 
-    func testTickGapCountsAsAway() {
+    func testSparseTicksDoNotResetWhileInputContinues() {
         var tracker = SitTracker(awayThreshold: 180)
         tracker.tick(now: at(0), idleSeconds: 0)
-        tracker.tick(now: at(10), idleSeconds: 0)
-        // 잠자기 등으로 1시간 동안 틱이 없었다
-        let bout = tracker.tick(now: at(70), idleSeconds: 1)
+        // 타이머가 늦게 돌아도 입력이 이어졌다면 같은 구간이다
+        XCTAssertNil(tracker.tick(now: at(30), idleSeconds: 2))
+        XCTAssertEqual(tracker.sittingSeconds(at: at(30)) / 60, 30, accuracy: 0.01)
+    }
+
+    func testSleepClosesBout() {
+        var tracker = SitTracker(awayThreshold: 180)
+        tracker.tick(now: at(0), idleSeconds: 0)
+        let bout = tracker.markAway(at: at(10))
         XCTAssertEqual(bout?.end, at(10))
-        XCTAssertTrue(tracker.isSitting)
+        tracker.tick(now: at(70), idleSeconds: 1)
         XCTAssertLessThan(tracker.sittingSeconds(at: at(70)), 5)
     }
 
