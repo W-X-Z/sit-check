@@ -11,9 +11,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Swift version
         run: swift --version
-      - name: Build
+      - name: Build (SwiftPM)
         run: swift build
       - name: Test
         run: swift test
-      - name: Bundle .app
+      - name: Bundle .app (swiftc direct)
         run: ./scripts/make-app.sh
+
+  bundle-intel:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Bundle .app (swiftc direct, x86_64)
+        run: ./scripts/make-app.sh && file build/SitCheck.app/Contents/MacOS/SitCheck

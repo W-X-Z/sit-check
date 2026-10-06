@@ -1,29 +1,46 @@
 #!/usr/bin/env bash
-# 릴리스 빌드 후 메뉴바 전용 .app 번들(build/SitCheck.app)을 만든다.
-# 개인용 로컬 빌드라 ad-hoc 서명만 한다.
+# 메뉴바 전용 .app 번들(build/SitCheck.app)을 만든다.
+# SwiftPM(Package.swift) 없이 swiftc로 직접 빌드하므로, Command Line Tools의
+# PackageDescription이 깨져 있어도 동작한다. 개인용 로컬 빌드라 ad-hoc 서명만 한다.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if ! out="$(swift build -c release 2>&1)"; then
-    echo "$out" | tail -30
-    if grep -q "SDK is not supported by the compiler" <<<"$out"; then
-        cat <<'HINT'
-
-[안내] Swift 컴파일러와 macOS SDK 버전이 서로 맞지 않습니다 (Command Line Tools가 일부만 업데이트된 상태).
-  해결: Command Line Tools를 다시 설치하세요.
-    sudo rm -rf /Library/Developer/CommandLineTools
-    xcode-select --install
-  (Xcode가 설치되어 있다면: sudo xcode-select -s /Applications/Xcode.app)
-HINT
-    fi
-    exit 1
-fi
-BIN="$(swift build -c release --show-bin-path)/SitCheck"
+ARCH="$(uname -m)"
+TARGET="${ARCH}-apple-macos14.0"
+OUT="build/obj"
 APP="build/SitCheck.app"
 
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp "$BIN" "$APP/Contents/MacOS/SitCheck"
+rm -rf "$OUT" "$APP"
+mkdir -p "$OUT" "$APP/Contents/MacOS"
+
+hint() {
+    cat <<'HINT'
+
+[안내] 빌드에 실패했습니다. 대부분 Command Line Tools가 반쯤 업데이트된 경우입니다.
+  1) sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install
+  2) 그래도 안 되면 App Store에서 Xcode를 설치한 뒤:
+     sudo xcode-select -s /Applications/Xcode.app
+HINT
+}
+trap 'hint' ERR
+
+echo "▶ SitCheckCore 빌드 ($TARGET)"
+swiftc -O -whole-module-optimization -parse-as-library \
+    -target "$TARGET" \
+    -module-name SitCheckCore \
+    -emit-library -static -o "$OUT/libSitCheckCore.a" \
+    -emit-module -emit-module-path "$OUT/SitCheckCore.swiftmodule" \
+    Sources/SitCheckCore/*.swift
+
+echo "▶ SitCheck 앱 빌드"
+swiftc -O -whole-module-optimization -parse-as-library \
+    -target "$TARGET" \
+    -module-name SitCheck \
+    -I "$OUT" -L "$OUT" -lSitCheckCore -lsqlite3 \
+    -o "$APP/Contents/MacOS/SitCheck" \
+    Sources/SitCheck/*.swift
+
+trap - ERR
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -45,5 +62,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 codesign --force --sign - "$APP"
-echo "만들었어요: $APP"
+echo "✅ 만들었어요: $APP"
 echo "실행: open $APP   (로그인 시 자동 실행: 시스템 설정 > 일반 > 로그인 항목에 추가)"
