@@ -224,7 +224,7 @@ final class StoreTests: XCTestCase {
 
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let files = try store.exportCSV(to: dir)
-        XCTAssertEqual(files.count, 3)
+        XCTAssertEqual(files.count, 6)
         let csv = try String(contentsOf: dir.appendingPathComponent("stretch_log.csv"), encoding: .utf8)
         XCTAssertTrue(csv.hasPrefix("at,stretch_id,tighter_side,symptom,nudge_id\n"))
         try? FileManager.default.removeItem(at: dir)

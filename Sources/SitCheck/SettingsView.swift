@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 import SitCheckCore
 
 /// 설정: 임계값, 추가 세트, 제외 동작, 데이터 내보내기와 삭제
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     @State private var confirmDelete = false
 
     var body: some View {
@@ -22,7 +24,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("카메라로 자세 감지", isOn: $model.settings.cameraEnabled)
+                Toggle("카메라 사용", isOn: $model.settings.cameraEnabled)
                 if model.settings.cameraEnabled {
                     if model.cameraStatus == .running {
                         CameraPreview(session: model.camera.session)
@@ -32,37 +34,39 @@ struct SettingsView: View {
                     LabeledContent("상태") {
                         Text(model.cameraStatusText).multilineTextAlignment(.trailing)
                     }
-                    if let delta = model.postureDeltaText {
-                        LabeledContent("기준 대비") { Text(delta).monospacedDigit() }
-                    }
                     HStack {
-                        Button(model.settings.postureBaseline == nil ? "지금 자세를 기준으로 저장" : "기준 자세 다시 저장") {
-                            model.startCalibration()
-                        }
-                        .disabled(model.cameraStatus != .running || model.calibrating)
                         if model.cameraStatus != .running && model.cameraStatus != .starting {
                             Button("카메라 다시 시도") { model.retryCamera() }
                         }
+                        Button("카메라 다시 고르기") { model.resetCameraChoice() }
                         Spacer()
-                        if let saved = model.settings.postureBaseline?.savedAt {
-                            Text("저장: \(saved.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Button("실험·측정 열기") {
+                            NSApp.activate(ignoringOtherApps: true)
+                            openWindow(id: "experiments")
                         }
                     }
-                    Stepper("기울기·회전 기준: \(model.settings.tiltThresholdDegrees)°",
-                            value: $model.settings.tiltThresholdDegrees, in: 5...30)
-                    Stepper("화면 접근 기준: 얼굴 \(model.settings.approachThresholdPercent)% 커짐",
-                            value: $model.settings.approachThresholdPercent, in: 5...50, step: 5)
-                    Stepper("이어진 시간: \(model.settings.postureHoldSeconds)초",
-                            value: $model.settings.postureHoldSeconds, in: 30...600, step: 30)
-                    Stepper("같은 자세 알림 간격: \(model.settings.postureRepeatMinutes)분",
+                    Picker("카메라 알림", selection: $model.settings.postureAlertMode) {
+                        ForEach(PostureAlertMode.allCases, id: \.self) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    Stepper("오래 같은 자세(R5): \(model.settings.signals.stillMinutes)분",
+                            value: $model.settings.signals.stillMinutes, in: 10...90, step: 5)
+                    Stepper("점점 아래로·가까이(R6) 이어진 시간: \(model.settings.signals.driftHoldMinutes)분",
+                            value: $model.settings.signals.driftHoldMinutes, in: 2...30)
+                    Stepper(String(format: "R6 기준: 개인 흔들림의 %.1f배", model.settings.signals.driftK),
+                            value: $model.settings.signals.driftK, in: 1.5...8, step: 0.5)
+                    Stepper("카메라 카드 하루 최대: \(model.settings.postureCardsPerDay)장",
+                            value: $model.settings.postureCardsPerDay, in: 1...10)
+                    Stepper("같은 카드 다시 띄우는 간격: \(model.settings.postureRepeatMinutes)분부터",
                             value: $model.settings.postureRepeatMinutes, in: 10...120, step: 10)
+                    Stepper("하루 확인 질문: \(model.settings.checkInsPerDay)번",
+                            value: $model.settings.checkInsPerDay, in: 0...4)
                 }
             } header: {
-                Text("카메라 자세 감지")
+                Text("카메라")
             } footer: {
-                Text("바르게 앉아 화면을 본 상태로 기준을 저장하세요. 영상은 저장하거나 전송하지 않고, 1초에 한 장씩 얼굴 각도와 크기만 이 Mac에서 계산해요. 얼굴이 보이면 입력이 없어도 앉아 있는 것으로 봐요.")
+                Text("영상은 저장하거나 전송하지 않아요. 1초에 한 장씩 얼굴 위치·크기·각도만 이 Mac에서 계산하고, 1분 단위 요약 수치만 남겨요. '바른 자세'를 판정하거나 좌우를 비교하지 않고, 같은 자세가 오래 이어지거나 앉은 직후보다 아래로·가까이 옮겨 간 것만 봐요. 얼굴이 보이면 입력이 없어도 앉아 있는 것으로 봐요.")
             }
 
             Section("호흡 신호 (메뉴바 아이콘만, 소리·팝업 없음)") {

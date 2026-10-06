@@ -123,38 +123,38 @@ final class PostureSchedulerTests: XCTestCase {
 
     func testPostureCardFiresWhileSitting() {
         var s = NudgeScheduler()
-        XCTAssertEqual(s.evaluate(now: at(5), boutStart: at(0), settings: settings, posture: .tiltRotation),
-                       .showCard(.tiltRotation))
-        XCTAssertNil(s.evaluate(now: at(5), boutStart: nil, settings: settings, posture: .tiltRotation))
+        XCTAssertEqual(s.evaluate(now: at(5), boutStart: at(0), settings: settings, posture: .stillness),
+                       .showCard(.stillness))
+        XCTAssertNil(s.evaluate(now: at(5), boutStart: nil, settings: settings, posture: .stillness))
     }
 
     func testLongSittingTakesPriority() {
         var s = NudgeScheduler()
-        XCTAssertEqual(s.evaluate(now: at(40), boutStart: at(0), settings: settings, posture: .screenApproach),
+        XCTAssertEqual(s.evaluate(now: at(40), boutStart: at(0), settings: settings, posture: .drift),
                        .showCard(.longSitting))
     }
 
     func testSamePostureRuleWaitsRepeatInterval() {
         var s = NudgeScheduler()
-        s.cardShown(.tiltRotation, at: at(5))
+        s.cardShown(.stillness, at: at(5))
         s.cardResolved(.done, at: at(6), settings: settings)
-        XCTAssertNil(s.evaluate(now: at(20), boutStart: at(10), settings: settings, posture: .tiltRotation))
-        XCTAssertEqual(s.evaluate(now: at(35), boutStart: at(10), settings: settings, posture: .tiltRotation),
-                       .showCard(.tiltRotation))
+        XCTAssertNil(s.evaluate(now: at(20), boutStart: at(10), settings: settings, posture: .stillness))
+        XCTAssertEqual(s.evaluate(now: at(35), boutStart: at(10), settings: settings, posture: .stillness),
+                       .showCard(.stillness))
     }
 
     func testOtherRuleRespectsCooldown() {
         var s = NudgeScheduler()
-        s.cardShown(.tiltRotation, at: at(5))
+        s.cardShown(.stillness, at: at(5))
         s.cardResolved(.done, at: at(6), settings: settings)
-        XCTAssertNil(s.evaluate(now: at(15), boutStart: at(6), settings: settings, posture: .screenApproach))
-        XCTAssertEqual(s.evaluate(now: at(21), boutStart: at(6), settings: settings, posture: .screenApproach),
-                       .showCard(.screenApproach))
+        XCTAssertNil(s.evaluate(now: at(15), boutStart: at(6), settings: settings, posture: .drift))
+        XCTAssertEqual(s.evaluate(now: at(21), boutStart: at(6), settings: settings, posture: .drift),
+                       .showCard(.drift))
     }
 
     func testMutedBlocksPosture() {
         var s = NudgeScheduler()
         s.mute(at: at(0), settings: settings)
-        XCTAssertNil(s.evaluate(now: at(30), boutStart: at(0), settings: settings, posture: .tiltRotation))
+        XCTAssertNil(s.evaluate(now: at(30), boutStart: at(0), settings: settings, posture: .stillness))
     }
 }

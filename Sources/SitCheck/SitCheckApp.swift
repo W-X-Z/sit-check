@@ -25,6 +25,12 @@ struct SitCheckApp: App {
                 .environmentObject(model)
         }
         .windowResizability(.contentSize)
+
+        Window("자세 코치 실험·측정", id: "experiments") {
+            ExperimentsView()
+                .environmentObject(model)
+        }
+        .windowResizability(.contentSize)
     }
 }
 

@@ -1,11 +1,41 @@
 import Foundation
 
-/// 알림 규칙. R2, R3는 카메라 자세 감지(`PostureMonitor`)가 켜져 있을 때만 발생한다.
+/// 알림 규칙.
+///
+/// - R1 장시간 착석, R4 호흡: 키보드·마우스 기반
+/// - R2 기울기·회전, R3 화면 접근: 예전 카메라 규칙. 카드는 띄우지 않고 비교용 기록만 남긴다.
+/// - R5 오래 같은 자세, R6 점점 아래로·가까이, R7 가까움: '바른 자세'를 판정하지 않는 카메라 신호
 public enum NudgeRule: String, Codable, CaseIterable, Sendable {
     case longSitting = "R1"
     case tiltRotation = "R2"
     case screenApproach = "R3"
     case breath = "R4"
+    case stillness = "R5"
+    case drift = "R6"
+    case near = "R7"
+    /// 자리·화면 위치가 바뀐 것 같음 (알림이 아니라 기록과 확인 질문)
+    case setupChange = "R8"
+
+    /// 카메라 신호로 띄우는 카드인지 (하루 상한·간격 늘리기 대상)
+    public var isPostureCard: Bool {
+        switch self {
+        case .stillness, .drift, .near: return true
+        default: return false
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .longSitting: return "장시간 착석"
+        case .tiltRotation: return "기울기·회전 (기록 전용)"
+        case .screenApproach: return "화면 접근 (기록 전용)"
+        case .breath: return "호흡"
+        case .stillness: return "오래 같은 자세"
+        case .drift: return "점점 아래로·가까이"
+        case .near: return "가까움"
+        case .setupChange: return "자리·화면 변화 의심"
+        }
+    }
 }
 
 /// FR-04: 규칙, 최근 이력, 제외 목록으로 스트레칭 2개를 고른다.
@@ -27,7 +57,7 @@ public struct Prescriber: Sendable {
         case .longSitting: return ["S5"]
         case .tiltRotation: return ["S2", "S1"]
         case .screenApproach: return ["S4", "S6"]
-        case .breath: return []
+        case .breath, .stillness, .drift, .near, .setupChange: return []
         }
     }
 
@@ -35,7 +65,8 @@ public struct Prescriber: Sendable {
     ///   - history: 과거 알림에서 제시한 동작 ID 목록. 오래된 것부터, 마지막이 직전 알림.
     ///   - excluded: 사용자가 제외했거나 통증·저림을 기록한 동작.
     public func prescribe(rule: NudgeRule, history: [[String]], excluded: Set<String>) -> [Stretch] {
-        guard rule != .breath else { return [] }
+        // 카메라 신호 카드는 감지된 자세를 '고칠 결함'처럼 읽히게 하지 않도록 스트레칭을 붙이지 않는다.
+        guard rule != .breath, rule != .setupChange, !rule.isPostureCard else { return [] }
         let previous = Set(history.last ?? [])
         let available = library.filter { !excluded.contains($0.id) }
 
