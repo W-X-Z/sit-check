@@ -530,3 +530,64 @@ final class StoreV2Tests: XCTestCase {
         XCTAssertNoThrow(try store.insert(SitBout(start: bout0, end: bout0.addingTimeInterval(60), endReason: .lock)))
     }
 }
+
+/// CI에서 분석 도구를 실제 기록으로 돌려 보기 위한 표본 데이터베이스를 만든다.
+/// `SITCHECK_SAMPLE_DB` 환경 변수가 있을 때만 돈다.
+final class SampleDatabaseTests: XCTestCase {
+    func testWriteSampleDatabaseForCLI() throws {
+        guard let path = ProcessInfo.processInfo.environment["SITCHECK_SAMPLE_DB"] else {
+            throw XCTSkip("SITCHECK_SAMPLE_DB가 없으면 건너뛴다")
+        }
+        try? FileManager.default.removeItem(atPath: path)
+        let store = try Store(path: path)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        var settings = AppSettings.default
+        settings.measurementStartedAt = today.addingTimeInterval(-10 * 86_400)
+        settings.distanceCalibration = DistanceCalibration(knownCm: 60, faceWidth: 0.2, calibratedAt: settings.measurementStartedAt!)
+        try store.saveSettings(settings)
+
+        for d in 1...10 {
+            let day = today.addingTimeInterval(-Double(d) * 86_400)
+            let bout = day.addingTimeInterval(9 * 3600)
+            // 120분 착석: 40분 뒤부터 조금씩 아래로, 25분마다 한 번 크게 움직임
+            for i in 0..<120 {
+                var m = minute(i, bout: bout, base: bout, y: i >= 40 ? 0.53 : 0.5,
+                               mad: i % 25 == 24 ? 0.03 : 0.002, faceFrames: i == 70 ? 5 : 58)
+                m.mode = d % 3 == 0 ? .faceLandmarks : .face
+                m.frameCap = d % 2 == 0
+                m.cpuPercent = (d % 3 == 0 ? 3.1 : 1.8) + Double(i % 5) * 0.1
+                m.analysisMs = d % 3 == 0 ? 38 : 22
+                m.settingsVersion = settings.detectionVersion
+                try store.insert(m)
+            }
+            try store.insert(SitBout(start: bout, end: bout.addingTimeInterval(7200), endReason: .away))
+
+            let r1 = bout.addingTimeInterval(40 * 60)
+            try store.insert(NudgeRecord(at: r1, rule: .longSitting, stretchIDs: ["S5", "S1"], action: d % 2 == 0 ? .done : .snooze))
+            try store.insert(NudgeRecord(at: r1.addingTimeInterval(1800), rule: .longSitting, stretchIDs: [], action: .icon))
+            try store.insert(NudgeRecord(at: r1.addingTimeInterval(600), rule: .stillness, stretchIDs: [], action: .done,
+                                         feedback: d % 4 == 0 ? .wrong : .right, detail: "{}"))
+            try store.insert(PostureEventRecord(at: r1, rule: .stillness, variant: "20분", mode: .shadow, actionable: true,
+                                                detail: ["still_minutes": 20]))
+            try store.insert(PostureEventRecord(at: r1, rule: .drift, variant: "아래로", mode: .shadow, actionable: true,
+                                                detail: ["lower_sigma": 5]))
+            try store.insert(PostureEventRecord(at: r1, rule: .tiltRotation, variant: "예전 규칙", mode: .shadow, actionable: false))
+            try store.insert(CheckInRecord(at: r1.addingTimeInterval(900), question: "q", answer: d % 3 == 0 ? .no : .yes,
+                                           stillMinutes: Double(d * 3), driftScore: 1))
+
+            if d <= 3 {
+                let lab = day.addingTimeInterval(13 * 3600)
+                for i in 0..<5 { try store.insert(minute(i, bout: lab, base: lab, mad: 0.0025, label: "still")) }
+                let steps: [(String, Double, Double)] = [("natural", 0.5, 0.3), ("sink", 0.55, 0.31), ("lookDown", 0.505, 0.3),
+                                                         ("leanIn", 0.5, 0.36), ("sideScreen", 0.5, 0.29)]
+                for (k, step) in steps.enumerated() {
+                    for j in 0..<2 {
+                        try store.insert(minute(10 + k * 2 + j, bout: lab, base: lab, y: step.1, w: step.2, label: step.0))
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(try store.postureMinutes(since: today.addingTimeInterval(-11 * 86_400)).count, 1000)
+    }
+}

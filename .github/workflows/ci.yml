@@ -13,10 +13,16 @@ jobs:
         run: swift --version
       - name: Build (SwiftPM)
         run: swift build
-      - name: Test
-        run: swift test
+      - name: Test (also writes a sample database for the analyzer)
+        run: SITCHECK_SAMPLE_DB="$RUNNER_TEMP/sample.sqlite" swift test
       - name: Bundle .app and analyzer (swiftc direct)
         run: ./scripts/make-app.sh
+      - name: Analyzer on sample data
+        run: |
+          DB="$RUNNER_TEMP/sample.sqlite"
+          build/sitcheck-analyze report --db "$DB"
+          build/sitcheck-analyze replay --db "$DB" --still 15,20,30 --drift-k 2,3,4 --drift-hold 3,5 --split 5
+          build/sitcheck-analyze probes --db "$DB"
       - name: Analyzer smoke test (empty database)
         run: |
           DB="$RUNNER_TEMP/smoke.sqlite"
