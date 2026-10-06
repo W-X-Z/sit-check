@@ -1,8 +1,19 @@
 import Foundation
 
+/// 착석 구간이 끝난 이유. 카드 효과를 볼 때 '실제로 일어났는지'와 '완료를 눌러 다시 센 것'을 구분한다.
+public enum BoutEndReason: String, Codable, Sendable {
+    /// 입력·얼굴이 임계 시간 넘게 없음
+    case away
+    /// 화면 잠금, 잠자기
+    case lock
+    /// 완료 버튼이나 메뉴로 타이머를 다시 시작
+    case restart
+}
+
 public struct SitBout: Equatable, Sendable {
     public let start: Date
     public let end: Date
+    public var endReason: BoutEndReason? = nil
 
     public var durationMinutes: Double { end.timeIntervalSince(start) / 60 }
 }
@@ -35,7 +46,7 @@ public struct SitTracker: Sendable {
     public mutating func tick(now: Date, idleSeconds: TimeInterval) -> SitBout? {
         let lastInput = now.addingTimeInterval(-max(0, idleSeconds))
         if idleSeconds >= awayThreshold {
-            return close(at: lastInput)
+            return close(at: lastInput, reason: .away)
         }
         if boutStart == nil {
             boutStart = lastInput
@@ -47,21 +58,21 @@ public struct SitTracker: Sendable {
     @discardableResult
     public mutating func markAway(at now: Date) -> SitBout? {
         guard boutStart != nil else { return nil }
-        return close(at: now)
+        return close(at: now, reason: .lock)
     }
 
     /// 스트레칭을 마치고 돌아온 경우: 현재 구간을 닫고 지금부터 새로 센다.
     @discardableResult
     public mutating func restart(at now: Date) -> SitBout? {
-        let closed = boutStart != nil ? close(at: now) : nil
+        let closed = boutStart != nil ? close(at: now, reason: .restart) : nil
         boutStart = now
         return closed
     }
 
-    private mutating func close(at end: Date) -> SitBout? {
+    private mutating func close(at end: Date, reason: BoutEndReason) -> SitBout? {
         guard let start = boutStart else { return nil }
         boutStart = nil
-        let bout = SitBout(start: start, end: max(start, end))
+        let bout = SitBout(start: start, end: max(start, end), endReason: reason)
         return bout.end.timeIntervalSince(bout.start) >= minimumBout ? bout : nil
     }
 }

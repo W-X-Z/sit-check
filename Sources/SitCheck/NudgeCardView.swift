@@ -26,33 +26,42 @@ struct NudgeCardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(session.reason)
                     .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(session.actionLine)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
-            ForEach(session.stretches) { stretch in
-                StretchRow(stretch: stretch,
-                           extra: model.settings.extraSets[stretch.id],
-                           entry: session.entries[stretch.id] ?? .init(),
-                           openGuide: { session.guide = stretch },
-                           recordSide: { model.record(side: $0, for: stretch, in: session) },
-                           recordSymptom: { model.record(symptom: $0, for: stretch, in: session) })
-            }
+            if session.isPostureCard {
+                postureFeedback
+            } else {
+                ForEach(session.stretches) { stretch in
+                    StretchRow(stretch: stretch,
+                               extra: model.settings.extraSets[stretch.id],
+                               entry: session.entries[stretch.id] ?? .init(),
+                               openGuide: { session.guide = stretch },
+                               recordSide: { model.record(side: $0, for: stretch, in: session) },
+                               recordSymptom: { model.record(symptom: $0, for: stretch, in: session) })
+                }
 
-            if session.stretches.isEmpty {
-                Text("제시할 동작이 없어요. 설정에서 제외 목록을 확인해 주세요.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                if session.stretches.isEmpty {
+                    Text("제시할 동작이 없어요. 설정에서 제외 목록을 확인해 주세요.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Divider()
 
             HStack {
-                Button("10분 미루기") { model.resolveCard(.snooze) }
+                if session.isPostureCard {
+                    Button("이번엔 넘기기") { model.resolveCard(.snooze) }
+                } else {
+                    Button("10분 미루기") { model.resolveCard(.snooze) }
+                }
                 Button("1시간 끄기") { model.resolveCard(.dismiss) }
                 Spacer()
-                Button("완료") { model.resolveCard(.done) }
+                Button(session.isPostureCard ? "일어났다 올게요" : "완료") { model.resolveCard(.done) }
                     .keyboardShortcut(.defaultAction)
             }
             .controlSize(.small)
@@ -63,6 +72,52 @@ struct NudgeCardView: View {
                     .foregroundStyle(.orange)
             }
         }
+    }
+
+    /// 카메라 카드: 맞았는지 한 번 눌러 답한다 (선택). 답은 유형별 정확도 계산에만 쓴다.
+    private var postureFeedback: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("이 알림이 맞았나요? (선택)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach(NudgeFeedback.allCases, id: \.self) { feedback in
+                    Toggle(feedback.label, isOn: Binding(
+                        get: { session.feedback == feedback },
+                        set: { _ in model.record(feedback: feedback, in: session) }
+                    ))
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+}
+
+/// 무작위 확인 질문 (하루 1–2번). 놓친 경우를 보기 위한 것이라 알림이 울리지 않은 순간에 묻는다.
+struct CheckInView: View {
+    let prompt: CheckInPrompt
+    let model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(CheckInPrompt.question)
+                .font(.headline)
+            Text("답은 감지가 맞는지 확인하는 데만 써요.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                ForEach([CheckInAnswer.yes, .no, .unsure], id: \.self) { answer in
+                    Button(answer.label) { model.answerCheckIn(answer) }
+                }
+                Spacer()
+                Button("닫기") { model.answerCheckIn(.dismissed) }
+                    .buttonStyle(.link)
+            }
+            .controlSize(.small)
+        }
+        .padding(16)
+        .background(.regularMaterial)
     }
 }
 

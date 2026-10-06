@@ -82,41 +82,44 @@ struct MenuContentView: View {
 
     private var postureStatus: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("카메라 자세").font(.caption.bold()).foregroundStyle(.secondary)
-            Label(model.cameraStatusText, systemImage: postureSymbol)
-                .foregroundStyle(postureColor)
+            Text("카메라").font(.caption.bold()).foregroundStyle(.secondary)
+            Label(model.cameraStatusText, systemImage: model.cameraStatus == .running ? "video" : "video.slash")
                 .font(.callout)
+                .foregroundStyle(model.cameraStatus == .running ? Color.primary : Color.secondary)
             if model.cameraStatus == .running {
-                Button(model.settings.postureBaseline == nil ? "지금 자세를 기준으로 저장" : "기준 자세 다시 저장") {
-                    model.startCalibration()
+                if let still = model.stillMinutes {
+                    Text("마지막 자세 변화: \(Int(still.rounded()))분 전")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.link)
-                .disabled(model.calibrating)
+                if let cm = model.distanceCm {
+                    Text(String(format: "화면까지 약 %.0f cm (최근 1분)", cm))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else if model.cameraStatus == .denied {
                 Button("카메라 권한 설정 열기") {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
                 }
                 .buttonStyle(.link)
             }
-        }
-    }
-
-    private var postureSymbol: String {
-        guard model.cameraStatus == .running else { return "video.slash" }
-        switch model.postureState {
-        case .good: return "checkmark.circle"
-        case .tilted, .approaching: return "exclamationmark.triangle"
-        case .noFace: return "person.crop.circle.badge.questionmark"
-        case .noBaseline: return "scope"
-        }
-    }
-
-    private var postureColor: Color {
-        guard model.cameraStatus == .running else { return .secondary }
-        switch model.postureState {
-        case .good: return .green
-        case .tilted, .approaching: return .orange
-        default: return .secondary
+            if model.setupChangeSuspected {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("자리나 화면 위치가 바뀐 것 같아요. 카메라 카드를 잠시 멈췄어요.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    HStack {
+                        Button("맞아요, 다시 배우기") { model.confirmSetupChange(true) }
+                        Button("아니에요") { model.confirmSetupChange(false) }
+                    }
+                    .controlSize(.small)
+                }
+            }
+            Button("실험·측정…") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "experiments")
+            }
+            .buttonStyle(.link)
         }
     }
 

@@ -1,18 +1,84 @@
 import Foundation
 
+/// 카메라 카드에 붙는 "맞았나요?" 답 (실험 7: 유형별 정확도)
+public enum NudgeFeedback: String, Codable, CaseIterable, Sendable {
+    case right
+    case wrong
+    /// 자리나 화면 위치가 바뀌어서 생긴 알림
+    case setupChanged
+
+    public var label: String {
+        switch self {
+        case .right: return "맞아요"
+        case .wrong: return "아니에요"
+        case .setupChanged: return "자리가 바뀌었어요"
+        }
+    }
+}
+
 public struct NudgeRecord: Equatable, Sendable {
     public var id: Int64?
     public var at: Date
     public var rule: NudgeRule
     public var stretchIDs: [String]
     public var action: NudgeAction
+    public var feedback: NudgeFeedback?
+    /// 신호 값 (JSON). 카메라 카드의 경우 어떤 값으로 울렸는지 남긴다.
+    public var detail: String?
 
-    public init(id: Int64? = nil, at: Date, rule: NudgeRule, stretchIDs: [String], action: NudgeAction) {
+    public init(id: Int64? = nil, at: Date, rule: NudgeRule, stretchIDs: [String], action: NudgeAction,
+                feedback: NudgeFeedback? = nil, detail: String? = nil) {
         self.id = id
         self.at = at
         self.rule = rule
         self.stretchIDs = stretchIDs
         self.action = action
+        self.feedback = feedback
+        self.detail = detail
+    }
+}
+
+/// 카메라 신호가 성립한 순간의 기록. `mode`가 shadow면 카드 없이 '울렸을 알림'만 남긴 것이다.
+public struct PostureEventRecord: Equatable, Sendable {
+    public var id: Int64?
+    public var at: Date
+    public var rule: NudgeRule
+    public var variant: String
+    public var mode: PostureAlertMode
+    /// 현재 설정 기준 카드 후보였는지 (기록 전용 변형이면 false)
+    public var actionable: Bool
+    public var detail: [String: Double]
+
+    public init(id: Int64? = nil, at: Date, rule: NudgeRule, variant: String, mode: PostureAlertMode,
+                actionable: Bool, detail: [String: Double] = [:]) {
+        self.id = id
+        self.at = at
+        self.rule = rule
+        self.variant = variant
+        self.mode = mode
+        self.actionable = actionable
+        self.detail = detail
+    }
+}
+
+/// 무작위 확인 질문과 그 순간의 감지 상태
+public struct CheckInRecord: Equatable, Sendable {
+    public var id: Int64?
+    public var at: Date
+    public var question: String
+    public var answer: CheckInAnswer
+    /// 질문 순간 감지기가 본 '마지막 자세 변화 뒤 지난 분'
+    public var stillMinutes: Double?
+    public var driftScore: Double?
+
+    public init(id: Int64? = nil, at: Date, question: String, answer: CheckInAnswer,
+                stillMinutes: Double? = nil, driftScore: Double? = nil) {
+        self.id = id
+        self.at = at
+        self.question = question
+        self.answer = answer
+        self.stillMinutes = stillMinutes
+        self.driftScore = driftScore
     }
 }
 
@@ -37,9 +103,9 @@ public struct StretchLog: Equatable, Sendable {
 
 /// 기획서 7장 지표 정의.
 public enum Metrics {
-    /// 수행률 = done인 알림 수 ÷ 전체 알림 수 (호흡 신호는 카드가 아니므로 제외)
+    /// 수행률 = done인 알림 수 ÷ 전체 카드 수 (호흡 신호와 아이콘만 보여 준 경우는 카드가 아니므로 제외)
     public static func completionRate(_ nudges: [NudgeRecord]) -> Double? {
-        let cards = nudges.filter { $0.rule != .breath }
+        let cards = nudges.filter { $0.rule != .breath && $0.action != .icon }
         guard !cards.isEmpty else { return nil }
         return Double(cards.filter { $0.action == .done }.count) / Double(cards.count)
     }
