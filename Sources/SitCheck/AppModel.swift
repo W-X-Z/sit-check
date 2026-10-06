@@ -581,6 +581,11 @@ final class AppModel: ObservableObject {
                 }
                 self.cameraStatus = status
                 self.cameraInfo = info
+                if status == .running {
+                    // 카메라가 꺼져 있던 시간을 첫 분의 CPU 평균에 섞지 않는다.
+                    self.cpuMeter = CPUMeter()
+                    _ = self.cpuMeter.sample(at: Date())
+                }
                 // 처음 켤 때 고른 카메라(내장 카메라)를 고정한다.
                 if status == .running, self.settings.cameraUniqueID == nil, let id = info?.uniqueID {
                     self.settings.cameraUniqueID = id
@@ -604,9 +609,11 @@ final class AppModel: ObservableObject {
 
     /// 고정해 둔 카메라를 풀고 내장 카메라를 다시 고른다.
     func resetCameraChoice() {
+        if let minute = aggregator.flush(at: Date()) { minuteClosed(minute) }
         settings.cameraUniqueID = nil
-        camera.stop()
+        camera.resetDevice()
         cameraStatus = .off
+        cameraInfo = nil
         updateCamera()
     }
 

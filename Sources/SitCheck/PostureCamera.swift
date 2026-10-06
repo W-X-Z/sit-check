@@ -82,6 +82,20 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
+    /// 연결된 카메라를 떼어 낸다. 다음 `start`에서 카메라를 다시 고른다.
+    func resetDevice() {
+        queue.async {
+            if self.session.isRunning { self.session.stopRunning() }
+            self.session.beginConfiguration()
+            self.session.inputs.forEach { self.session.removeInput($0) }
+            self.session.outputs.forEach { self.session.removeOutput($0) }
+            self.session.commitConfiguration()
+            self.device = nil
+            self.configured = false
+            self.lastAnalysis = .distantPast
+        }
+    }
+
     /// 분석 구성과 프레임 속도 상한을 바꾼다 (실험 1).
     func update(mode: AnalysisMode, capFrameRate: Bool, completion: (@MainActor (Double?) -> Void)? = nil) {
         queue.async {
