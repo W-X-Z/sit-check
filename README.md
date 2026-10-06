@@ -4,6 +4,7 @@
 키보드·마우스 입력으로 착석 시간을 재고, 카메라로 고개 기울기·회전(R2)과 화면 쪽으로 다가간 자세(R3)를 감지한다.
 
 - 기획서 검토와 MVP에서 해석한 부분: [docs/spec-review.md](docs/spec-review.md)
+- 자세 감지 방향성 리서치(기존 앱, 정면 웹캠 정확도, Apple 센서, 인체공학·알림 연구): [docs/posture-detection-research.md](docs/posture-detection-research.md), 근거 노트는 [docs/research-notes/posture-detection/](docs/research-notes/posture-detection/)
 
 ## 동작
 
