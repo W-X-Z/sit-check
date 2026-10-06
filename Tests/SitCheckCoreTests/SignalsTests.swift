@@ -23,7 +23,7 @@ private func minute(_ i: Int, bout: Date? = bout0, base: Date = bout0, y: Double
                          faceFrames: faceFrames, stats: stats, boutStart: bout)
 }
 
-private func run(_ signals: inout PostureSignals, _ minutes: [PostureMinute]) -> [(Int, SignalEvent)] {
+private func feedMinutes(_ signals: inout PostureSignals, _ minutes: [PostureMinute]) -> [(Int, SignalEvent)] {
     var out: [(Int, SignalEvent)] = []
     for (i, m) in minutes.enumerated() {
         for e in signals.process(m) { out.append((i, e)) }
@@ -90,7 +90,7 @@ final class NoiseModelTests: XCTestCase {
 final class PostureSignalsTests: XCTestCase {
     func testStillnessFiresAtThresholdAndVariants() {
         var signals = PostureSignals()
-        let events = run(&signals, (0..<50).map { minute($0) })
+        let events = feedMinutes(&signals, (0..<50).map { minute($0) })
         let still = events.filter { $0.1.rule == .stillness }
         XCTAssertEqual(still.map { $0.0 }, [19, 29, 44])
         XCTAssertEqual(still.map { $0.1.variant }, ["20분", "30분", "45분"])
@@ -102,7 +102,7 @@ final class PostureSignalsTests: XCTestCase {
         var signals = PostureSignals()
         // 25번째 분부터 얼굴 위치가 3 cm쯤 내려간 채로 머문다 → 그 순간을 자세 변화로 본다
         let minutes = (0..<50).map { minute($0, y: $0 >= 25 ? 0.55 : 0.5) }
-        let still = run(&signals, minutes).filter { $0.1.rule == .stillness && $0.1.actionable }
+        let still = feedMinutes(&signals, minutes).filter { $0.1.rule == .stillness && $0.1.actionable }
         XCTAssertEqual(still.map { $0.0 }, [19, 45])
     }
 
@@ -110,7 +110,7 @@ final class PostureSignalsTests: XCTestCase {
         var signals = PostureSignals()
         var minutes = (0..<30).map { minute($0) }
         minutes[10] = minute(10, mad: 0.03) // 그 분 안에서 크게 움직임
-        let still = run(&signals, minutes).filter { $0.1.rule == .stillness && $0.1.actionable }
+        let still = feedMinutes(&signals, minutes).filter { $0.1.rule == .stillness && $0.1.actionable }
         XCTAssertTrue(still.isEmpty, "11분에 다시 세기 시작했으므로 30분 안에는 20분이 안 됨")
     }
 
@@ -118,14 +118,14 @@ final class PostureSignalsTests: XCTestCase {
         var signals = PostureSignals()
         var minutes = (0..<30).map { minute($0) }
         minutes[12] = minute(12, faceFrames: 10)
-        XCTAssertTrue(run(&signals, minutes).filter { $0.1.rule == .stillness }.isEmpty)
+        XCTAssertTrue(feedMinutes(&signals, minutes).filter { $0.1.rule == .stillness }.isEmpty)
     }
 
     func testDriftDownFiresOnceAfterHold() {
         var signals = PostureSignals()
         let sigma = NoiseModel.defaults.faceY
         let minutes = (0..<20).map { minute($0, y: $0 >= 8 ? 0.5 + 5 * sigma : 0.5) }
-        let drift = run(&signals, minutes).filter { $0.1.rule == .drift }
+        let drift = feedMinutes(&signals, minutes).filter { $0.1.rule == .drift }
         XCTAssertEqual(drift.map { $0.0 }, [15])
         XCTAssertEqual(drift.first?.1.variant, "아래로")
         XCTAssertEqual(drift.first?.1.detail["lower_pct"] ?? 0, 5 * sigma * 100, accuracy: 1e-9)
@@ -141,21 +141,21 @@ final class PostureSignalsTests: XCTestCase {
             default: return 0.5
             }
         }
-        let drift = run(&signals, ys.enumerated().map { minute($0.offset, y: $0.element) }).filter { $0.1.rule == .drift }
+        let drift = feedMinutes(&signals, ys.enumerated().map { minute($0.offset, y: $0.element) }).filter { $0.1.rule == .drift }
         XCTAssertEqual(drift.count, 2)
     }
 
     func testDriftIgnoresUpAndFarther() {
         var signals = PostureSignals()
         let minutes = (0..<25).map { minute($0, y: $0 >= 8 ? 0.45 : 0.5, w: $0 >= 8 ? 0.25 : 0.3) }
-        XCTAssertTrue(run(&signals, minutes).filter { $0.1.rule == .drift }.isEmpty)
+        XCTAssertTrue(feedMinutes(&signals, minutes).filter { $0.1.rule == .drift }.isEmpty)
         XCTAssertLessThan(signals.driftScore ?? 0, 0)
     }
 
     func testDriftCloser() {
         var signals = PostureSignals()
         let minutes = (0..<20).map { minute($0, w: $0 >= 8 ? 0.33 : 0.3) } // 얼굴 크기 +10%
-        let drift = run(&signals, minutes).filter { $0.1.rule == .drift }
+        let drift = feedMinutes(&signals, minutes).filter { $0.1.rule == .drift }
         XCTAssertEqual(drift.first?.1.variant, "가까이")
         XCTAssertEqual(drift.first?.1.detail["closer_pct"] ?? 0, 10, accuracy: 1e-6)
     }
@@ -163,10 +163,10 @@ final class PostureSignalsTests: XCTestCase {
     func testNearNeedsCalibrationAndHold() {
         let minutes = (0..<12).map { minute($0, w: 0.32) }
         var uncalibrated = PostureSignals()
-        XCTAssertTrue(run(&uncalibrated, minutes).filter { $0.1.rule == .near }.isEmpty)
+        XCTAssertTrue(feedMinutes(&uncalibrated, minutes).filter { $0.1.rule == .near }.isEmpty)
 
         var signals = PostureSignals(distance: DistanceCalibration(knownCm: 60, faceWidth: 0.2, calibratedAt: day0))
-        let near = run(&signals, minutes).filter { $0.1.rule == .near }
+        let near = feedMinutes(&signals, minutes).filter { $0.1.rule == .near }
         XCTAssertEqual(near.map { $0.0 }, [9])
         XCTAssertEqual(near.first?.1.detail["distance_cm"] ?? 0, 37.5, accuracy: 1e-9)
         XCTAssertEqual(signals.distanceCm ?? 0, 37.5, accuracy: 1e-9)
@@ -175,12 +175,12 @@ final class PostureSignalsTests: XCTestCase {
     func testNearSkipsTurnedHead() {
         var signals = PostureSignals(distance: DistanceCalibration(knownCm: 60, faceWidth: 0.2, calibratedAt: day0))
         let minutes = (0..<12).map { minute($0, w: 0.32, yaw: 40) }
-        XCTAssertTrue(run(&signals, minutes).filter { $0.1.rule == .near }.isEmpty)
+        XCTAssertTrue(feedMinutes(&signals, minutes).filter { $0.1.rule == .near }.isEmpty)
     }
 
     func testNotSittingResets() {
         var signals = PostureSignals()
-        _ = run(&signals, (0..<10).map { minute($0) })
+        _ = feedMinutes(&signals, (0..<10).map { minute($0) })
         XCTAssertNotNil(signals.stillMinutes(at: bout0.addingTimeInterval(600)))
         _ = signals.process(minute(10, bout: nil))
         XCTAssertNil(signals.stillMinutes(at: bout0.addingTimeInterval(660)))
@@ -188,7 +188,7 @@ final class PostureSignalsTests: XCTestCase {
 
     func testLabeledMinutesAreIgnored() {
         var signals = PostureSignals()
-        let events = run(&signals, (0..<30).map { minute($0, label: "still") })
+        let events = feedMinutes(&signals, (0..<30).map { minute($0, label: "still") })
         XCTAssertTrue(events.isEmpty)
     }
 }

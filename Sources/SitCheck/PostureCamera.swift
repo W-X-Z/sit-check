@@ -45,7 +45,7 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var analysisInterval: TimeInterval = 1
     private var mode: AnalysisMode = .face
     private var capFrameRate = true
-    private var probe3D: (@MainActor (String) -> Void)?
+    private var pending3DProbe: (@MainActor (String) -> Void)?
 
     /// Info.plist에 카메라 사용 설명이 없으면 macOS가 접근 시 앱을 종료시킨다 (`swift run`으로 실행한 경우).
     static var canRequestAccess: Bool {
@@ -96,7 +96,7 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     /// 다음 프레임에서 3D 몸 자세 요청을 한 번 돌려 결과를 알려 준다 (실험 1).
     func probe3D(completion: @escaping @MainActor (String) -> Void) {
-        queue.async { self.probe3D = completion }
+        queue.async { self.pending3DProbe = completion }
     }
 
     private func run(preferredID: String?, mode: AnalysisMode, capFrameRate: Bool,
@@ -187,8 +187,8 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let sample = analyze(pixels, at: now)
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
 
-        if let probe = probe3D {
-            probe3D = nil
+        if let probe = pending3DProbe {
+            pending3DProbe = nil
             let result = Self.run3D(pixels)
             Task { @MainActor in probe(result) }
         }
