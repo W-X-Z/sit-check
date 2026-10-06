@@ -57,6 +57,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>CFBundleDevelopmentRegion</key><string>ko</string>
+    <key>NSCameraUsageDescription</key><string>앉은 자세(고개 기울기, 화면과의 거리)를 확인하는 데 써요. 영상은 저장하거나 전송하지 않아요.</string>
 </dict>
 </plist>
 PLIST

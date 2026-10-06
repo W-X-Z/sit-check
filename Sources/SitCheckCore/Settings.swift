@@ -19,6 +19,17 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// 동작별 추가 세트. 기획서 초기값은 S3 오른쪽 30초지만,
     /// 진단 전 좌우 편향 처방을 막는 NFR-09와 충돌하므로 기본값은 비워 둔다.
     public var extraSets: [String: ExtraSet] = [:]
+    /// FR-08: 카메라 자세 감지 (R2, R3). 영상은 저장하지 않고 얼굴 각도·크기만 쓴다.
+    public var cameraEnabled: Bool = true
+    /// R2: 기준 대비 고개 기울기 임계값 (도). 회전(yaw)은 이 값의 1.5배.
+    public var tiltThresholdDegrees: Int = 12
+    /// R3: 기준 대비 얼굴 폭이 이 비율(%) 이상 커지면 화면에 다가간 것으로 본다.
+    public var approachThresholdPercent: Int = 15
+    /// 벗어난 자세가 이 시간(초) 이어져야 알린다.
+    public var postureHoldSeconds: Int = 90
+    /// 같은 자세 알림을 다시 띄우기까지의 최소 간격 (분). NFR-08 오탐 피로 대응.
+    public var postureRepeatMinutes: Int = 30
+    public var postureBaseline: PostureBaseline?
 
     public init() {}
 
@@ -37,5 +48,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
         breathIntervalMinutes = try c.decodeIfPresent(Int.self, forKey: .breathIntervalMinutes) ?? d.breathIntervalMinutes
         excludedStretchIDs = try c.decodeIfPresent(Set<String>.self, forKey: .excludedStretchIDs) ?? d.excludedStretchIDs
         extraSets = try c.decodeIfPresent([String: ExtraSet].self, forKey: .extraSets) ?? d.extraSets
+        cameraEnabled = try c.decodeIfPresent(Bool.self, forKey: .cameraEnabled) ?? d.cameraEnabled
+        tiltThresholdDegrees = try c.decodeIfPresent(Int.self, forKey: .tiltThresholdDegrees) ?? d.tiltThresholdDegrees
+        approachThresholdPercent = try c.decodeIfPresent(Int.self, forKey: .approachThresholdPercent) ?? d.approachThresholdPercent
+        postureHoldSeconds = try c.decodeIfPresent(Int.self, forKey: .postureHoldSeconds) ?? d.postureHoldSeconds
+        postureRepeatMinutes = try c.decodeIfPresent(Int.self, forKey: .postureRepeatMinutes) ?? d.postureRepeatMinutes
+        postureBaseline = try c.decodeIfPresent(PostureBaseline.self, forKey: .postureBaseline)
     }
 }

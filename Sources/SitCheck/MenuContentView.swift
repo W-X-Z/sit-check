@@ -17,6 +17,11 @@ struct MenuContentView: View {
                     .foregroundStyle(.orange)
             }
 
+            if model.settings.cameraEnabled {
+                Divider()
+                postureStatus
+            }
+
             Divider()
             summary
             Divider()
@@ -72,6 +77,46 @@ struct MenuContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var postureStatus: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("카메라 자세").font(.caption.bold()).foregroundStyle(.secondary)
+            Label(model.cameraStatusText, systemImage: postureSymbol)
+                .foregroundStyle(postureColor)
+                .font(.callout)
+            if model.cameraStatus == .running {
+                Button(model.settings.postureBaseline == nil ? "지금 자세를 기준으로 저장" : "기준 자세 다시 저장") {
+                    model.startCalibration()
+                }
+                .buttonStyle(.link)
+                .disabled(model.calibrating)
+            } else if model.cameraStatus == .denied {
+                Button("카메라 권한 설정 열기") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
+                }
+                .buttonStyle(.link)
+            }
+        }
+    }
+
+    private var postureSymbol: String {
+        guard model.cameraStatus == .running else { return "video.slash" }
+        switch model.postureState {
+        case .good: return "checkmark.circle"
+        case .tilted, .approaching: return "exclamationmark.triangle"
+        case .noFace: return "person.crop.circle.badge.questionmark"
+        case .noBaseline: return "scope"
+        }
+    }
+
+    private var postureColor: Color {
+        guard model.cameraStatus == .running else { return .secondary }
+        switch model.postureState {
+        case .good: return .green
+        case .tilted, .approaching: return .orange
+        default: return .secondary
         }
     }
 

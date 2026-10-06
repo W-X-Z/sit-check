@@ -23,6 +23,7 @@ public struct NudgeScheduler: Sendable {
     public private(set) var mutedUntil: Date?
     public private(set) var lastCard: (rule: NudgeRule, at: Date)?
     public private(set) var lastBreath: Date?
+    public private(set) var lastShown: [NudgeRule: Date] = [:]
 
     public init() {}
 
@@ -31,12 +32,19 @@ public struct NudgeScheduler: Sendable {
         return false
     }
 
-    public mutating func evaluate(now: Date, boutStart: Date?, settings: AppSettings) -> SchedulerEvent? {
+    /// - Parameter posture: 카메라 감지기가 충분히 오래 이어졌다고 판단한 자세 규칙 (R2, R3)
+    public mutating func evaluate(now: Date, boutStart: Date?, settings: AppSettings,
+                                  posture: NudgeRule? = nil) -> SchedulerEvent? {
         guard cardVisible == nil, !isMuted(at: now), let boutStart else { return nil }
         let sitting = now.timeIntervalSince(boutStart)
 
         if sitting >= Double(settings.sitAlertMinutes) * 60, canShow(.longSitting, now: now, settings: settings) {
             return .showCard(.longSitting)
+        }
+
+        if let posture, canShow(posture, now: now, settings: settings),
+           lastShown[posture].map({ now.timeIntervalSince($0) >= Double(settings.postureRepeatMinutes) * 60 }) ?? true {
+            return .showCard(posture)
         }
 
         if settings.breathEnabled {
@@ -62,6 +70,7 @@ public struct NudgeScheduler: Sendable {
     public mutating func cardShown(_ rule: NudgeRule, at now: Date) {
         cardVisible = rule
         lastCard = (rule, now)
+        lastShown[rule] = now
         snoozedUntil = nil
     }
 

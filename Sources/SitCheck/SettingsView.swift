@@ -21,6 +21,50 @@ struct SettingsView: View {
                         value: $model.settings.cooldownMinutes, in: 0...60, step: 5)
             }
 
+            Section {
+                Toggle("카메라로 자세 감지", isOn: $model.settings.cameraEnabled)
+                if model.settings.cameraEnabled {
+                    if model.cameraStatus == .running {
+                        CameraPreview(session: model.camera.session)
+                            .frame(height: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    LabeledContent("상태") {
+                        Text(model.cameraStatusText).multilineTextAlignment(.trailing)
+                    }
+                    if let delta = model.postureDeltaText {
+                        LabeledContent("기준 대비") { Text(delta).monospacedDigit() }
+                    }
+                    HStack {
+                        Button(model.settings.postureBaseline == nil ? "지금 자세를 기준으로 저장" : "기준 자세 다시 저장") {
+                            model.startCalibration()
+                        }
+                        .disabled(model.cameraStatus != .running || model.calibrating)
+                        if model.cameraStatus != .running && model.cameraStatus != .starting {
+                            Button("카메라 다시 시도") { model.retryCamera() }
+                        }
+                        Spacer()
+                        if let saved = model.settings.postureBaseline?.savedAt {
+                            Text("저장: \(saved.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Stepper("기울기·회전 기준: \(model.settings.tiltThresholdDegrees)°",
+                            value: $model.settings.tiltThresholdDegrees, in: 5...30)
+                    Stepper("화면 접근 기준: 얼굴 \(model.settings.approachThresholdPercent)% 커짐",
+                            value: $model.settings.approachThresholdPercent, in: 5...50, step: 5)
+                    Stepper("이어진 시간: \(model.settings.postureHoldSeconds)초",
+                            value: $model.settings.postureHoldSeconds, in: 30...600, step: 30)
+                    Stepper("같은 자세 알림 간격: \(model.settings.postureRepeatMinutes)분",
+                            value: $model.settings.postureRepeatMinutes, in: 10...120, step: 10)
+                }
+            } header: {
+                Text("카메라 자세 감지")
+            } footer: {
+                Text("바르게 앉아 화면을 본 상태로 기준을 저장하세요. 영상은 저장하거나 전송하지 않고, 1초에 한 장씩 얼굴 각도와 크기만 이 Mac에서 계산해요. 얼굴이 보이면 입력이 없어도 앉아 있는 것으로 봐요.")
+            }
+
             Section("호흡 신호 (메뉴바 아이콘만, 소리·팝업 없음)") {
                 Toggle("호흡 신호 사용", isOn: $model.settings.breathEnabled)
                 Stepper("간격: \(model.settings.breathIntervalMinutes)분",
@@ -72,7 +116,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 640)
+        .frame(width: 480, height: 720)
         .confirmationDialog("착석, 알림, 스트레칭 기록을 모두 지울까요?", isPresented: $confirmDelete) {
             Button("삭제", role: .destructive) { model.deleteAllRecords() }
         } message: {

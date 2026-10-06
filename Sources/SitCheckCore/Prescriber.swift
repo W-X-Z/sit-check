@@ -1,6 +1,6 @@
 import Foundation
 
-/// 알림 규칙. v0.1은 R1과 R4만 실제로 발생한다 (R2, R3는 v0.2 카메라 감지용).
+/// 알림 규칙. R2, R3는 카메라 자세 감지(`PostureMonitor`)가 켜져 있을 때만 발생한다.
 public enum NudgeRule: String, Codable, CaseIterable, Sendable {
     case longSitting = "R1"
     case tiltRotation = "R2"

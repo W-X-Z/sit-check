@@ -57,11 +57,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var clinicAdvice = false
     @Published private(set) var lastError: String?
 
+    // 카메라 자세 감지
+    @Published private(set) var cameraStatus: CameraStatus = .off
+    @Published private(set) var postureState: PostureState = .noFace
+    @Published private(set) var lastSample: PostureSample?
+    @Published private(set) var calibrating = false
+
     @Published var settings: AppSettings = .default {
         didSet {
             guard settings != oldValue else { return }
             tracker.awayThreshold = Double(settings.awayAfterMinutes) * 60
             persist { try $0.saveSettings(settings) }
+            if settings.cameraEnabled != oldValue.cameraEnabled { updateCamera() }
+            if settings.postureBaseline != oldValue.postureBaseline { posture.reset() }
         }
     }
 
@@ -75,12 +83,17 @@ final class AppModel: ObservableObject {
     private var breathOffTask: Task<Void, Never>?
     private var screenLocked = false
     private var observers: [NSObjectProtocol] = []
+    let camera = PostureCamera()
+    private var posture = PostureMonitor()
+    private var calibrationSamples: [PostureSample] = []
+    private var calibrationEnds: Date?
     /// App Nap으로 타이머가 몇 분씩 밀리면 자리 비움을 놓치므로 끈다 (시스템 잠자기는 허용).
     private let activity = ProcessInfo.processInfo.beginActivity(
         options: .userInitiatedAllowingIdleSystemSleep, reason: "착석 시간 측정")
 
     static let tickInterval: TimeInterval = 5
     static let breathSignalSeconds: UInt64 = 60
+    static let calibrationSeconds: TimeInterval = 3
 
     init() {
         tracker = SitTracker(awayThreshold: Double(AppSettings.default.awayAfterMinutes) * 60)
@@ -93,6 +106,8 @@ final class AppModel: ObservableObject {
             lastError = "저장소를 열지 못했어요: \(error)"
         }
         observeSystemEvents()
+        camera.onSample = { [weak self] sample in self?.handle(sample) }
+        updateCamera()
         refreshStats()
         timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -117,7 +132,12 @@ final class AppModel: ObservableObject {
     private func tick(now: Date = Date()) {
         if !screenLocked {
             let wasSitting = tracker.isSitting
-            let closed = tracker.tick(now: now, idleSeconds: IdleMonitor.secondsSinceLastInput())
+            var idle = IdleMonitor.secondsSinceLastInput()
+            // 입력 없이 읽거나 영상을 봐도 얼굴이 보이면 앉아 있는 것으로 본다.
+            if cameraStatus == .running, let sinceFace = posture.secondsSinceFace(at: now) {
+                idle = min(idle, sinceFace)
+            }
+            let closed = tracker.tick(now: now, idleSeconds: idle)
             if let closed {
                 boutClosed(closed, at: now)
             } else if wasSitting, !tracker.isSitting {
@@ -128,7 +148,8 @@ final class AppModel: ObservableObject {
         }
         refreshDisplay(now: now)
 
-        switch scheduler.evaluate(now: now, boutStart: tracker.boutStart, settings: settings) {
+        let pendingPosture = cameraStatus == .running ? posture.pendingRule(at: now, settings: settings) : nil
+        switch scheduler.evaluate(now: now, boutStart: tracker.boutStart, settings: settings, posture: pendingPosture) {
         case .showCard(let rule)?:
             showCard(rule: rule, at: now)
         case .breath?:
@@ -174,6 +195,7 @@ final class AppModel: ObservableObject {
                                   sittingMinutes: Int(tracker.sittingSeconds(at: now) / 60))
         self.session = session
         scheduler.cardShown(rule, at: now)
+        if rule == .tiltRotation || rule == .screenApproach { posture.resetDeviation(at: now) }
         cardVisible = true
         breathing = false
         panel.show(NudgeCardView(session: session, model: self))
@@ -289,6 +311,101 @@ final class AppModel: ObservableObject {
         do { try work(store) } catch { lastError = "\(error)" }
     }
 
+    // MARK: - 카메라 자세 감지 (FR-08~11)
+
+    var cameraStatusText: String {
+        switch cameraStatus {
+        case .off: return "카메라 꺼짐"
+        case .starting: return "카메라 켜는 중…"
+        case .running: return postureText
+        case .denied: return "카메라 권한이 없어요. 시스템 설정 > 개인정보 보호 및 보안 > 카메라에서 허용해 주세요."
+        case .unavailable(let reason): return reason
+        }
+    }
+
+    private var postureText: String {
+        if calibrating { return "기준 자세를 재는 중… 바르게 앉아 화면을 봐 주세요" }
+        switch postureState {
+        case .noBaseline: return "바른 자세 기준을 저장해 주세요"
+        case .noFace: return "얼굴이 보이지 않아요"
+        case .good: return "기준 자세와 비슷해요"
+        case .tilted: return "고개가 기울거나 돌아가 있어요"
+        case .approaching: return "화면 쪽으로 다가가 있어요"
+        }
+    }
+
+    /// 기준 대비 현재 차이 (설정에서 임계값을 맞출 때 참고용)
+    var postureDeltaText: String? {
+        guard let sample = lastSample, let base = settings.postureBaseline, base.faceWidth > 0 else { return nil }
+        let roll = Int((sample.roll - base.roll).rounded())
+        let yaw = Int((sample.yaw - base.yaw).rounded())
+        let distance = Int(((sample.faceWidth / base.faceWidth - 1) * 100).rounded())
+        return "기울기 \(roll)° · 회전 \(yaw)° · 얼굴 크기 \(distance >= 0 ? "+" : "")\(distance)%"
+    }
+
+    private func updateCamera() {
+        if settings.cameraEnabled && !screenLocked {
+            guard cameraStatus != .running, cameraStatus != .starting else { return }
+            cameraStatus = .starting
+            camera.start { [weak self] status in
+                guard let self else { return }
+                // 켜는 사이에 설정을 끄거나 화면이 잠기면 바로 멈춘다.
+                if status == .running, !self.settings.cameraEnabled || self.screenLocked {
+                    self.camera.stop()
+                    self.cameraStatus = .off
+                } else {
+                    self.cameraStatus = status
+                }
+            }
+        } else {
+            camera.stop()
+            if cameraStatus == .running || cameraStatus == .starting { cameraStatus = .off }
+            posture.reset()
+            postureState = .noFace
+            lastSample = nil
+            calibrating = false
+        }
+    }
+
+    func retryCamera() {
+        cameraStatus = .off
+        updateCamera()
+    }
+
+    /// 바르게 앉은 상태에서 몇 초간 샘플을 모아 기준으로 저장한다.
+    func startCalibration() {
+        guard cameraStatus == .running else {
+            lastError = "카메라가 켜져 있어야 기준 자세를 저장할 수 있어요"
+            return
+        }
+        calibrationSamples = []
+        calibrationEnds = Date().addingTimeInterval(Self.calibrationSeconds)
+        calibrating = true
+    }
+
+    private func handle(_ sample: PostureSample?) {
+        guard cameraStatus == .running else { return }
+        let now = Date()
+        lastSample = sample
+        if calibrating {
+            if let sample { calibrationSamples.append(sample) }
+            if let calibrationEnds, now >= calibrationEnds { finishCalibration(at: now) }
+        }
+        postureState = posture.update(sample, at: now, baseline: settings.postureBaseline, settings: settings)
+    }
+
+    private func finishCalibration(at now: Date) {
+        calibrating = false
+        calibrationEnds = nil
+        if calibrationSamples.count >= 2, let baseline = PostureBaseline.from(calibrationSamples, at: now) {
+            settings.postureBaseline = baseline
+            lastError = nil
+        } else {
+            lastError = "얼굴이 잘 보이지 않아 기준을 저장하지 못했어요. 밝은 곳에서 다시 해 주세요."
+        }
+        calibrationSamples = []
+    }
+
     // MARK: - 화면 잠금, 잠자기 (NFR-06)
 
     private func observeSystemEvents() {
@@ -310,6 +427,7 @@ final class AppModel: ObservableObject {
 
     private func handleAway() {
         screenLocked = true
+        updateCamera()
         let now = Date()
         if let bout = tracker.markAway(at: now) {
             boutClosed(bout, at: now)
@@ -322,6 +440,7 @@ final class AppModel: ObservableObject {
 
     private func handleBack() {
         screenLocked = false
+        updateCamera()
         tick()
     }
 }
