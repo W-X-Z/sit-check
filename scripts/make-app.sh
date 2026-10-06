@@ -4,7 +4,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-swift build -c release
+if ! out="$(swift build -c release 2>&1)"; then
+    echo "$out" | tail -30
+    if grep -q "SDK is not supported by the compiler" <<<"$out"; then
+        cat <<'HINT'
+
+[안내] Swift 컴파일러와 macOS SDK 버전이 서로 맞지 않습니다 (Command Line Tools가 일부만 업데이트된 상태).
+  해결: Command Line Tools를 다시 설치하세요.
+    sudo rm -rf /Library/Developer/CommandLineTools
+    xcode-select --install
+  (Xcode가 설치되어 있다면: sudo xcode-select -s /Applications/Xcode.app)
+HINT
+    fi
+    exit 1
+fi
 BIN="$(swift build -c release --show-bin-path)/SitCheck"
 APP="build/SitCheck.app"
 
