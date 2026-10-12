@@ -71,9 +71,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>CFBundleDevelopmentRegion</key><string>ko</string>
-    <key>NSCameraUsageDescription</key><string>앉은 자세가 오래 그대로인지, 화면에 가까워졌는지 확인하는 데 써요. 영상은 저장하거나 전송하지 않아요.</string>
-    <key>NSMotionUsageDescription</key><string>실험 2: AirPods 머리 동작 데이터가 이 Mac에서 들어오는지 확인하는 데만 써요.</string>
-</dict>
+    <key>NSCameraUsageDescription</key><string>자세가 바른지(거북목, 좌우 기울기)와 오래 그대로인지 확인하는 데 써요. 영상은 저장하거나 전송하지 않아요.</string></dict>
 </plist>
 PLIST
 

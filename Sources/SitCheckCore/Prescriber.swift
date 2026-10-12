@@ -5,6 +5,7 @@ import Foundation
 /// - R1 장시간 착석, R4 호흡: 키보드·마우스 기반
 /// - R2 기울기·회전, R3 화면 접근: 예전 카메라 규칙. 카드는 띄우지 않고 비교용 기록만 남긴다.
 /// - R5 오래 같은 자세, R6 점점 아래로·가까이, R7 가까움: '바른 자세'를 판정하지 않는 카메라 신호
+/// - R9 거북목, R10 좌우 비대칭: 골격으로 보는 바른 자세 판정 (`PostureChecker`)
 public enum NudgeRule: String, Codable, CaseIterable, Sendable {
     case longSitting = "R1"
     case tiltRotation = "R2"
@@ -15,14 +16,19 @@ public enum NudgeRule: String, Codable, CaseIterable, Sendable {
     case near = "R7"
     /// 자리·화면 위치가 바뀐 것 같음 (알림이 아니라 기록과 확인 질문)
     case setupChange = "R8"
+    case forwardHead = "R9"
+    case asymmetry = "R10"
 
     /// 카메라 신호로 띄우는 카드인지 (하루 상한·간격 늘리기 대상)
     public var isPostureCard: Bool {
         switch self {
-        case .stillness, .drift, .near: return true
+        case .stillness, .drift, .near, .forwardHead, .asymmetry: return true
         default: return false
         }
     }
+
+    /// 바른 자세 판정 카드인지 ("고쳐 앉았어요"로 닫고, 착석 시간은 이어서 센다)
+    public var isPostureCheck: Bool { self == .forwardHead || self == .asymmetry }
 
     public var title: String {
         switch self {
@@ -34,6 +40,8 @@ public enum NudgeRule: String, Codable, CaseIterable, Sendable {
         case .drift: return "점점 아래로·가까이"
         case .near: return "가까움"
         case .setupChange: return "자리·화면 변화 의심"
+        case .forwardHead: return "거북목"
+        case .asymmetry: return "좌우 비대칭"
         }
     }
 }
@@ -41,7 +49,7 @@ public enum NudgeRule: String, Codable, CaseIterable, Sendable {
 /// FR-04: 규칙, 최근 이력, 제외 목록으로 스트레칭 2개를 고른다.
 ///
 /// - R1: S5 고정 + 순환 1개. 순환 칸은 가장 오래 전에 나온 동작을 고른다.
-/// - R2: S2, S1 / R3: S4, S6. 제외된 동작은 순환 후보로 채운다.
+/// - R2·R10: S2, S1 / R3·R9: S4, S6. 제외된 동작은 순환 후보로 채운다.
 /// - 같은 스트레칭을 연속 두 번 제시하지 않는다. 단, R1의 고정 동작(S5)은
 ///   기획서가 "고정"으로 정했으므로 이 규칙의 예외로 둔다 (docs/spec-review.md 참고).
 public struct Prescriber: Sendable {
@@ -55,8 +63,8 @@ public struct Prescriber: Sendable {
     public static func fixedIDs(for rule: NudgeRule) -> [String] {
         switch rule {
         case .longSitting: return ["S5"]
-        case .tiltRotation: return ["S2", "S1"]
-        case .screenApproach: return ["S4", "S6"]
+        case .tiltRotation, .asymmetry: return ["S2", "S1"]
+        case .screenApproach, .forwardHead: return ["S4", "S6"]
         case .breath, .stillness, .drift, .near, .setupChange: return []
         }
     }
@@ -65,8 +73,8 @@ public struct Prescriber: Sendable {
     ///   - history: 과거 알림에서 제시한 동작 ID 목록. 오래된 것부터, 마지막이 직전 알림.
     ///   - excluded: 사용자가 제외했거나 통증·저림을 기록한 동작.
     public func prescribe(rule: NudgeRule, history: [[String]], excluded: Set<String>) -> [Stretch] {
-        // 카메라 신호 카드는 감지된 자세를 '고칠 결함'처럼 읽히게 하지 않도록 스트레칭을 붙이지 않는다.
-        guard rule != .breath, rule != .setupChange, !rule.isPostureCard else { return [] }
+        // R5–R7은 감지된 자세를 '고칠 결함'처럼 읽히게 하지 않도록 스트레칭을 붙이지 않는다.
+        guard rule != .breath, rule != .setupChange, !rule.isPostureCard || rule.isPostureCheck else { return [] }
         let previous = Set(history.last ?? [])
         let available = library.filter { !excluded.contains($0.id) }
 

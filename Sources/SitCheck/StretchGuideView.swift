@@ -78,7 +78,7 @@ struct StretchGuideView: View {
             HStack {
                 if finished {
                     Button("다시", action: reset)
-                    Button("기록하러 가기", action: back).keyboardShortcut(.defaultAction)
+                    Button("카드로 돌아가기", action: back).keyboardShortcut(.defaultAction)
                 } else {
                     Button(running ? "일시정지" : "시작") { running.toggle() }
                         .keyboardShortcut(.defaultAction)

@@ -28,6 +28,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var postureAlertMode: PostureAlertMode = .shadow
     /// R5–R7 판정값
     public var signals: SignalParameters = SignalParameters()
+    /// R9·R10 바른 자세 판정값
+    public var postureCheck: PostureCheckParameters = PostureCheckParameters()
     /// 카메라 카드 하루 상한
     public var postureCardsPerDay: Int = 3
     /// 같은 카메라 카드를 다시 띄우기까지의 기본 간격 (분). 무시하거나 미루면 두 배씩 늘어난다.
@@ -113,6 +115,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         cameraEnabled = try c.decodeIfPresent(Bool.self, forKey: .cameraEnabled) ?? d.cameraEnabled
         postureAlertMode = try c.decodeIfPresent(PostureAlertMode.self, forKey: .postureAlertMode) ?? d.postureAlertMode
         signals = try c.decodeIfPresent(SignalParameters.self, forKey: .signals) ?? d.signals
+        postureCheck = try c.decodeIfPresent(PostureCheckParameters.self, forKey: .postureCheck) ?? d.postureCheck
         postureCardsPerDay = try c.decodeIfPresent(Int.self, forKey: .postureCardsPerDay) ?? d.postureCardsPerDay
         postureRepeatMinutes = try c.decodeIfPresent(Int.self, forKey: .postureRepeatMinutes) ?? d.postureRepeatMinutes
         checkInsPerDay = try c.decodeIfPresent(Int.self, forKey: .checkInsPerDay) ?? d.checkInsPerDay
