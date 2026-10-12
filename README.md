@@ -5,6 +5,7 @@
 
 - 기획서 검토와 MVP에서 해석한 부분: [docs/spec-review.md](docs/spec-review.md)
 - 자세 감지 방향성 리서치(기존 앱, 정면 웹캠 정확도, Apple 센서, 인체공학·알림 연구): [docs/posture-detection-research.md](docs/posture-detection-research.md), 근거 노트는 [docs/research-notes/posture-detection/](docs/research-notes/posture-detection/)
+- 정밀 자세 측정 방법 레퍼런스(측면 사진·스티커 CVA, 몸에 붙이는 IMU, 의자·등받이 센서, 임상 도구, X선 기준점): [docs/precise-posture-measurement.md](docs/precise-posture-measurement.md), 근거 노트는 [docs/research-notes/precise-measurement/](docs/research-notes/precise-measurement/)
 - **실험 진행 가이드와 터미널 명령: [docs/experiments.md](docs/experiments.md)**
 
 ## 빠른 시작
