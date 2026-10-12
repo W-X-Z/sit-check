@@ -56,6 +56,9 @@ struct ExperimentsView: View {
             }
             LabeledContent("오늘 '울렸을 알림'") { Text(eventsText) }
             LabeledContent("통화 감지") { Text(model.inCall ? "통화 중으로 봄 (카드 미룸)" : "아니요") }
+            LabeledContent("사진 일지") {
+                Text(model.settings.photoDiaryEnabled ? "켬 · 답할 사진 \(model.reviewQueue.count)묶음" : "꺼짐 (설정에서 켜기)")
+            }
         } header: {
             Text("측정 상태")
         } footer: {
@@ -175,9 +178,9 @@ struct ExperimentsView: View {
                 .disabled(model.experiment != nil || model.cameraStatus != .running)
             LabeledContent("기록된 동작 분") { Text("\(model.measurement.protocolMinutesRecorded)분") }
         } header: {
-            Text("실험 4 · 의도한 동작 구분 (30분 × 2–3회, 다른 날)")
+            Text("실험 4 · 의도한 동작 구분 (선택)")
         } footer: {
-            Text("자연스럽게 앉기 → (무작위 순서) 내려다보기, 휴대폰, 옆 화면, 다가가기, 가라앉기, 등받이, 옆으로 기대기 → 의자 바꾸기를 2분씩 해요. 바뀔 때 소리가 나요. 실험 중에는 카드가 뜨지 않아요.")
+            Text("사진 일지로 실제 업무 중 답을 모으면 이 실험은 하지 않아도 돼요. 하려면: 자연스럽게 앉기 → (무작위 순서) 내려다보기, 휴대폰, 옆 화면, 다가가기, 가라앉기, 등받이, 옆으로 기대기 → 의자 바꾸기를 2분씩 해요. 바뀔 때 소리가 나요. 실험 중에는 카드가 뜨지 않아요.")
         }
     }
 

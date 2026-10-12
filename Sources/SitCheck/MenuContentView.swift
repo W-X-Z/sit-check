@@ -115,6 +115,13 @@ struct MenuContentView: View {
                     .controlSize(.small)
                 }
             }
+            if model.settings.photoDiaryEnabled || !model.reviewQueue.isEmpty {
+                Button(model.reviewQueue.isEmpty ? "사진 리뷰…" : "사진 리뷰 (\(model.reviewQueue.count)묶음)…") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "review")
+                }
+                .buttonStyle(.link)
+            }
             Button("실험·측정…") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "experiments")

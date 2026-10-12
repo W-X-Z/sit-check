@@ -576,6 +576,27 @@ final class SampleDatabaseTests: XCTestCase {
             try store.insert(CheckInRecord(at: r1.addingTimeInterval(900), question: "q", answer: d % 3 == 0 ? .no : .yes,
                                            stillMinutes: Double(d * 3), driftScore: 1))
 
+            // 사진 일지 답 (사진 파일 없이 기록만): 정지 30분 넘을 때만 알림을 원한 사람
+            let photo = [SnapshotPhoto(slot: "now", at: r1)]
+            try store.insert(Snapshot(at: r1.addingTimeInterval(-1200), reason: .random, photos: photo, photosDeletedAt: r1,
+                                      state: [SnapshotKey.stillMinutes: Double(5 + d), SnapshotKey.driftScore: 0.5],
+                                      activity: d % 2 == 0 ? .screen : .lookDown, wanted: .no, labeledAt: r1))
+            try store.insert(Snapshot(at: r1, reason: .event, rule: .stillness, variant: "20분", photos: photo, photosDeletedAt: r1,
+                                      state: [SnapshotKey.stillMinutes: 20, SnapshotKey.shiftK: settings.signals.shiftK],
+                                      activity: d % 4 == 0 ? .phone : .screen, wanted: d % 4 == 0 ? .no : .unsure,
+                                      match: d % 4 == 0 ? .wrong : .right, labeledAt: r1))
+            try store.insert(Snapshot(at: r1.addingTimeInterval(1500), reason: .random, photos: photo, photosDeletedAt: r1,
+                                      state: [SnapshotKey.stillMinutes: Double(30 + d), SnapshotKey.driftScore: 3.5],
+                                      activity: .sink, wanted: .yes, labeledAt: r1,
+                                      recheckActivity: d == 1 ? .sink : nil, recheckWanted: d == 1 ? .yes : nil,
+                                      recheckAt: d == 1 ? r1.addingTimeInterval(86_400) : nil))
+            if d == 1 {
+                try store.insert(Snapshot(at: r1.addingTimeInterval(3000), reason: .nearThreshold, rule: .stillness, photos: photo,
+                                          state: [SnapshotKey.stillMinutes: 15]))
+                try store.insert(TuningChange(at: r1, parameter: "stillMinutes", oldValue: 20, newValue: 25, samples: 20,
+                                              scoreBefore: 0.75, scoreAfter: 0.9, note: "표본"))
+            }
+
             if d <= 3 {
                 let lab = day.addingTimeInterval(13 * 3600)
                 for i in 0..<5 { try store.insert(minute(i, bout: lab, base: lab, mad: 0.0025, label: "still")) }

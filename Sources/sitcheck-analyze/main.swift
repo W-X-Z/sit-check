@@ -16,6 +16,7 @@ let usage = """
   replay     기록 재생으로 판정값 고르기 (실험 5)
   feedback   카메라 카드 정확도와 무작위 확인 질문 (실험 7)
   outcomes   알림 뒤 10분 안에 실제로 일어났는지, 카드와 아이콘 비교 (실험 8)
+  labels     사진 일지 답, 알림 순간 감지 정확도, 판정값 점진 조정 기록
   probes     3D 몸 자세·AirPods 확인 기록 (실험 1·2)
   export     전체 기록을 CSV로 내보내기 (예: export ~/Desktop/sitcheck-csv)
   help       이 도움말
@@ -149,6 +150,8 @@ struct Dataset {
     let bouts: [SitBout]
     let checkIns: [CheckInRecord]
     let stillMinutes: [PostureMinute]
+    let snapshots: [Snapshot]
+    let tuning: [TuningChange]
     let since: Date
 }
 
@@ -161,6 +164,8 @@ func load(_ store: Store, days: Int) throws -> Dataset {
                  bouts: try store.bouts(since: since),
                  checkIns: try store.checkIns(since: since),
                  stillMinutes: try store.postureMinutes(label: ExperimentLabel.still.rawValue),
+                 snapshots: try store.snapshots(since: since),
+                 tuning: try store.tuningLog(since: since),
                  since: since)
 }
 
@@ -379,6 +384,89 @@ func showOutcomes(_ d: Dataset) {
     print("실험 8 기준: 카드 쪽이 아이콘 쪽보다 10%p 이상 높은 상태가 4주 이어지면 카드를 유지해요.")
 }
 
+func showLabels(_ d: Dataset) {
+    title("사진 일지 답")
+    let all = d.snapshots
+    guard !all.isEmpty else {
+        print("아직 사진 일지가 없어요. 설정 > 사진 일지를 켜면 앉아 있는 동안 하루 몇 묶음을 남겨요.")
+        return
+    }
+    let answered = all.filter { $0.labeledAt != nil && ($0.activity != nil || $0.wanted != nil || $0.match != nil) }
+    let skipped = all.filter { $0.labeledAt != nil }.count - answered.count
+    let waiting = all.filter { $0.labeledAt == nil && $0.hasPhotos }.count
+    print("사진 묶음 \(all.count)개 · 답함 \(answered.count) · 건너뜀 \(skipped) · 답 기다림 \(waiting) (최근 기록 기준)")
+    table(["찍은 이유", "묶음", "답함", "알림 원함", "원하지 않음", "모름"],
+          SnapshotReason.allCases.map { reason in
+              let g = answered.filter { $0.reason == reason }
+              return [reason.label, "\(all.filter { $0.reason == reason }.count)", "\(g.count)",
+                      "\(g.filter { $0.wanted == .yes }.count)", "\(g.filter { $0.wanted == .no }.count)",
+                      "\(g.filter { $0.wanted == .unsure }.count)"]
+          })
+
+    title("알림 순간 사진: 감지 내용이 사진과 맞았나")
+    let events = answered.filter { $0.reason == .event }
+    if events.isEmpty {
+        print("아직 없어요.")
+    } else {
+        table(["유형", "답함", "맞아요", "아니에요", "자리 바뀜", "정확도", "알림 원함"],
+              cameraRules.compactMap { rule in
+                  let g = events.filter { $0.rule == rule }
+                  guard !g.isEmpty else { return nil }
+                  let right = g.filter { $0.match == .right }.count
+                  let wrong = g.filter { $0.match == .wrong }.count
+                  let wantedAnswers = g.filter { $0.answeredWant != nil }
+                  return [rule.title, "\(g.count)", "\(right)", "\(wrong)", "\(g.filter { $0.match == .setupChanged }.count)",
+                          pct(right + wrong > 0 ? Double(right) / Double(right + wrong) : nil),
+                          pct(wantedAnswers.isEmpty ? nil : Double(wantedAnswers.filter { $0.wanted == .yes }.count) / Double(wantedAnswers.count))]
+              })
+        print("정확도 = 맞아요 ÷ (맞아요 + 아니에요). '알림 원함'은 그 순간 알림을 받았으면 좋았겠다는 답의 비율이에요.")
+    }
+
+    title("상황별 답 (어떤 상황에서 알림을 원하지 않았나)")
+    let labeledActivities = answered.filter { $0.activity != nil }
+    if labeledActivities.isEmpty {
+        print("아직 없어요.")
+    } else {
+        table(["상황", "답", "알림 원함", "원하지 않음", "알림 순간 중 '아니에요'"],
+              SnapshotActivity.allCases.compactMap { activity in
+                  let g = labeledActivities.filter { $0.activity == activity }
+                  guard !g.isEmpty else { return nil }
+                  return [activity.label, "\(g.count)", "\(g.filter { $0.wanted == .yes }.count)",
+                          "\(g.filter { $0.wanted == .no }.count)",
+                          "\(g.filter { $0.reason == .event && $0.match == .wrong }.count)"]
+              })
+    }
+
+    title("판정값: 답을 가장 잘 가르는 값")
+    let evals = GradualTuner.evaluate(answered, params: d.settings.signals)
+    table(["값", "답 (네/아니요)", "지금", "지금 점수", "가장 나은 값", "그 점수", "다음 조정"],
+          evals.map { e in
+              ["\(e.title)", "\(e.samples) (\(e.yes)/\(e.no))", f(e.current), f(e.currentScore, 2), f(e.best), f(e.bestScore, 2),
+               e.next.map { "→ \(f($0))" } ?? (e.ready ? "그대로" : "답 모으는 중")]
+          })
+    print("점수 = 균형 정확도 (알림을 원한 순간을 잡은 비율과 원하지 않은 순간을 거른 비율의 평균).")
+    print("답이 12개 이상, 네·아니요가 각각 4개 이상이고 0.05 이상 나을 때만 하루 한 칸 옮겨요 (설정 > 사진 일지 > 자동 조정).")
+    let m = GradualTuner.stillnessMatch(answered, shiftK: d.settings.signals.shiftK)
+    print("'오래 같은 자세' 감지가 사진과 맞음 \(m.right) · 다름 \(m.wrong) (지금 자세 변화 기준 \(f(d.settings.signals.shiftK))배로 찍은 것). 다름이 30% 넘고 8개 이상이면 기준을 0.5씩 낮춰요.")
+
+    let agreement = SnapshotAgreement.recheck(all)
+    print("\n다시 보기 \(agreement.count)개 · 같은 상황 답 \(pct(agreement.activity)) · 같은 '알림 원함' 답 \(pct(agreement.wanted))")
+    if agreement.count >= 5, let w = agreement.wanted, w < 0.7 {
+        print("  '알림 원함' 답이 자주 바뀌어요. 조정이 흔들릴 수 있으니 자동 조정을 끄고 지켜봐도 돼요.")
+    }
+
+    title("판정값 조정 기록")
+    if d.tuning.isEmpty {
+        print("아직 없어요.")
+    } else {
+        table(["날짜", "값", "이전", "이후", "답", "점수 전→후", "메모"],
+              d.tuning.map { c in
+                  [timeFormatter.string(from: c.at), c.parameter, f(c.oldValue), f(c.newValue), "\(c.samples)",
+                   "\(f(c.scoreBefore, 2))→\(f(c.scoreAfter, 2))", c.note]
+              })
+    }
+}
+
 func showProbes(_ dbPath: String) {
     title("3D 몸 자세·AirPods 확인 기록 (실험 1·2)")
     let url = URL(fileURLWithPath: dbPath).deletingLastPathComponent().appendingPathComponent("probes.log")
@@ -413,6 +501,7 @@ func showReport(_ d: Dataset, _ o: Options) {
     showProtocol(d)
     showFeedback(d)
     showOutcomes(d)
+    showLabels(d)
     showProbes(o.dbPath)
 
     title("다음 할 일")
@@ -423,9 +512,12 @@ func showReport(_ d: Dataset, _ o: Options) {
     }
     let stillDays = Set(d.stillMinutes.map { Calendar.current.startOfDay(for: $0.start) }).count
     if stillDays < 3 { todo.append("실험 3: '가만히 5분'을 다른 날·조명으로 \(3 - stillDays)번 더") }
-    let protocolDays = Set(d.minutes.filter { $0.label != nil && $0.label != ExperimentLabel.still.rawValue }
-        .map { Calendar.current.startOfDay(for: $0.start) }).count
-    if protocolDays < 2 { todo.append("실험 4: '의도한 동작 실험'을 다른 날 \(2 - protocolDays)번 더") }
+    if !s.photoDiaryEnabled {
+        todo.append("사진 일지: 설정에서 켜고 하루 1–2분 사진 리뷰 (일부러 과장한 실험 대신 실제 업무 중 답으로 판정값을 맞춰요)")
+    } else {
+        let waiting = d.snapshots.filter { $0.labeledAt == nil && $0.hasPhotos }.count
+        if waiting > 0 { todo.append("사진 리뷰: 답할 사진 \(waiting)묶음 (메뉴 > 사진 리뷰)") }
+    }
     if s.distanceCalibration == nil { todo.append("실험 6: 줄자로 60 cm에서 거리 보정") }
     let measuredDays = usableDays(d).count
     if measuredDays < 14 { todo.append("실험 5: '기록만' 상태로 \(14 - measuredDays)일 더 쓰기 (앉은 시간 60분 넘는 날 기준)") }
@@ -467,6 +559,7 @@ do {
     case "replay": showReplay(data, options)
     case "feedback": showFeedback(data)
     case "outcomes": showOutcomes(data)
+    case "labels": showLabels(data)
     case "probes": showProbes(options.dbPath)
     default:
         print("알 수 없는 명령: \(options.command)\n")

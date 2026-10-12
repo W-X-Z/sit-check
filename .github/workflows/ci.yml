@@ -23,6 +23,7 @@ jobs:
           build/sitcheck-analyze report --db "$DB"
           build/sitcheck-analyze replay --db "$DB" --still 15,20,30 --drift-k 2,3,4 --drift-hold 3,5 --split 5
           build/sitcheck-analyze probes --db "$DB"
+          build/sitcheck-analyze labels --db "$DB"
       - name: Analyzer smoke test (empty database)
         run: |
           DB="$RUNNER_TEMP/smoke.sqlite"
@@ -30,6 +31,7 @@ jobs:
           build/sitcheck-analyze help | head -3
           build/sitcheck-analyze report --db "$DB"
           build/sitcheck-analyze replay --db "$DB" --still 20,30 --drift-k 2,3 --split 7
+          build/sitcheck-analyze labels --db "$DB"
           build/sitcheck-analyze export "$RUNNER_TEMP/csv" --db "$DB"
           ls "$RUNNER_TEMP/csv"
       - name: Local signing identity keeps a stable code identity

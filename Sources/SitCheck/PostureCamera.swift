@@ -1,5 +1,7 @@
 import AVFoundation
+import CoreImage
 import CoreMedia
+import ImageIO
 import SwiftUI
 import Vision
 import SitCheckCore
@@ -29,6 +31,7 @@ struct FrameResult: Sendable {
 
 /// FR-08: 카메라 프레임을 `analysisInterval`마다 한 장씩 Vision으로 분석해 수치만 넘긴다.
 /// 프레임은 메모리에서 바로 버리고 저장하거나 전송하지 않는다.
+/// 사진 일지를 켰을 때만 요청받은 순간의 작은 사진(가로 320픽셀)을 JPEG로 넘긴다.
 ///
 /// - 카메라는 내장 카메라로 고정한다 (아이폰 Continuity Camera 등으로 바뀌면 기준이 조용히 깨진다).
 /// - 1초에 한 장만 분석하므로 캡처도 지원되는 가장 낮은 프레임 속도로 묶는다.
@@ -46,6 +49,11 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var mode: AnalysisMode = .face
     private var capFrameRate = true
     private var pending3DProbe: (@MainActor (String) -> Void)?
+    private var pendingThumbnails: [@MainActor (Data?) -> Void] = []
+    private lazy var imageContext = CIContext()
+
+    /// 사진 일지에 남기는 사진의 가로 픽셀
+    static let thumbnailWidth: CGFloat = 320
 
     /// Info.plist에 카메라 사용 설명이 없으면 macOS가 접근 시 앱을 종료시킨다 (`swift run`으로 실행한 경우).
     static var canRequestAccess: Bool {
@@ -79,7 +87,15 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         queue.async {
             if self.session.isRunning { self.session.stopRunning() }
             self.lastAnalysis = .distantPast
+            self.failThumbnails()
         }
+    }
+
+    /// 카메라를 멈추면 기다리던 사진 요청은 사진 없이 끝낸다.
+    private func failThumbnails() {
+        let requests = pendingThumbnails
+        pendingThumbnails = []
+        for completion in requests { Task { @MainActor in completion(nil) } }
     }
 
     /// 연결된 카메라를 떼어 낸다. 다음 `start`에서 카메라를 다시 고른다.
@@ -93,6 +109,7 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             self.device = nil
             self.configured = false
             self.lastAnalysis = .distantPast
+            self.failThumbnails()
         }
     }
 
@@ -106,6 +123,11 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if changed, let device = self.device { fps = self.applyFrameRate(device) }
             if let completion { Task { @MainActor in completion(fps) } }
         }
+    }
+
+    /// 다음에 분석하는 프레임을 작은 JPEG로 넘긴다 (사진 일지). 얼굴이 없거나 다른 얼굴이 함께 잡히면 nil.
+    func captureThumbnail(completion: @escaping @MainActor (Data?) -> Void) {
+        queue.async { self.pendingThumbnails.append(completion) }
     }
 
     /// 다음 프레임에서 3D 몸 자세 요청을 한 번 돌려 결과를 알려 준다 (실험 1).
@@ -198,8 +220,16 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         lastAnalysis = now
 
         let started = CFAbsoluteTimeGetCurrent()
-        let sample = analyze(pixels, at: now)
+        let (sample, faces) = analyze(pixels, at: now)
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
+
+        if !pendingThumbnails.isEmpty {
+            let requests = pendingThumbnails
+            pendingThumbnails = []
+            // 사용자 한 사람만 보일 때만 찍는다 (다른 사람이 함께 찍히지 않게).
+            let data = faces == 1 ? jpeg(pixels) : nil
+            for completion in requests { Task { @MainActor in completion(data) } }
+        }
 
         if let probe = pending3DProbe {
             pending3DProbe = nil
@@ -211,7 +241,18 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         Task { @MainActor in onFrame?(result) }
     }
 
-    private func analyze(_ pixels: CVPixelBuffer, at now: Date) -> PostureSample? {
+    /// 거울처럼 좌우를 뒤집고 줄여서 JPEG로 만든다.
+    private func jpeg(_ pixels: CVPixelBuffer) -> Data? {
+        var image = CIImage(cvPixelBuffer: pixels).oriented(.upMirrored)
+        let scale = Self.thumbnailWidth / max(image.extent.width, 1)
+        if scale < 1 { image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        let quality = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
+        return imageContext.jpegRepresentation(of: image, colorSpace: space, options: [quality: 0.7])
+    }
+
+    /// 프레임 하나를 분석한다. 찾은 얼굴 수도 함께 돌려준다.
+    private func analyze(_ pixels: CVPixelBuffer, at now: Date) -> (PostureSample?, Int) {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixels, orientation: .up)
         let faceRequest = VNDetectFaceRectanglesRequest()
         // 리비전 3부터 roll·yaw·pitch가 연속값으로 나온다 (그 전에는 구간 값).
@@ -222,7 +263,8 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         try? handler.perform(requests)
 
         // 여러 얼굴이 잡히면 가장 큰(가까운) 얼굴을 사용자로 본다.
-        guard let face = faceRequest.results?.max(by: { $0.boundingBox.width < $1.boundingBox.width }) else { return nil }
+        let faces = faceRequest.results?.count ?? 0
+        guard let face = faceRequest.results?.max(by: { $0.boundingBox.width < $1.boundingBox.width }) else { return (nil, faces) }
         let box = face.boundingBox
         let width = Double(CVPixelBufferGetWidth(pixels))
         let height = Double(CVPixelBufferGetHeight(pixels))
@@ -260,7 +302,7 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 sample.neckRatio = (midY - noseY) / shoulderPx
             }
         }
-        return sample
+        return (sample, faces)
     }
 
     /// 3D 몸 자세 요청을 한 번 돌린다. Intel Mac에서는 뉴럴 엔진이 없어 실패할 수 있다.

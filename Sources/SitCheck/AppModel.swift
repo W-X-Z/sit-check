@@ -133,6 +133,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var measurement = MeasurementSummary()
     @Published var experimentsWindowOpen = false
 
+    // 사진 일지
+    /// 답할 차례인 사진 묶음 (오래된 것부터)
+    @Published private(set) var reviewQueue: [Snapshot] = []
+    /// 최근 판정값 조정 기록
+    @Published private(set) var tuningLog: [TuningChange] = []
+
     @Published var settings: AppSettings = .default {
         didSet { settingsChanged(from: oldValue) }
     }
@@ -165,6 +171,14 @@ final class AppModel: ObservableObject {
     private var calibrationSamples: [PostureSample] = []
     private var calibrationEnds: Date?
     private var lastBaselineRefresh = Date.distantPast
+    let photos = PhotoStore(directory: PhotoStore.defaultDirectory())
+    private var photoPlanner = SnapshotPlanner(perDay: AppSettings.default.photosPerDay)
+    /// 최근 사진 (메모리에만, 5분마다 한 장). 사진 일지를 남길 때 '몇 분 전' 칸에 쓴다.
+    private var recentThumbs: [(at: Date, bout: Date, data: Data)] = []
+    /// 앉은 직후 사진 (메모리에만). 사진 일지를 남길 때 '앉은 직후' 칸에 쓴다.
+    private var boutThumb: (at: Date, bout: Date, data: Data)?
+    private var capturingSnapshot = false
+    private var lastPhotoMaintenance = Date.distantPast
     /// App Nap으로 타이머가 몇 분씩 밀리면 자리 비움을 놓치므로 끈다 (시스템 잠자기는 허용).
     private let activity = ProcessInfo.processInfo.beginActivity(
         options: .userInitiatedAllowingIdleSystemSleep, reason: "착석 시간 측정")
@@ -174,6 +188,10 @@ final class AppModel: ObservableObject {
     static let iconSignalSeconds: UInt64 = 120
     static let calibrationSeconds: TimeInterval = 10
     static let minCalibrationSamples = 5
+    static let thumbInterval: TimeInterval = 5 * 60
+    /// 처음 답한 사진 중 며칠 뒤 한 번 더 보여 줄 비율 (답이 일정한지 보기 위해)
+    static let recheckRate = 0.1
+    static let recheckDelay: TimeInterval = 2 * 86_400
 
     init() {
         tracker = SitTracker(awayThreshold: Double(AppSettings.default.awayAfterMinutes) * 60)
@@ -186,12 +204,15 @@ final class AppModel: ObservableObject {
             lastError = "저장소를 열지 못했어요: \(error)"
         }
         checkInPlanner.perDay = settings.checkInsPerDay
+        photoPlanner.perDay = settings.photosPerDay
         signals = PostureSignals(params: settings.signals, noise: noise, distance: settings.distanceCalibration)
         observeSystemEvents()
         camera.onFrame = { [weak self] frame in self?.handle(frame) }
         refreshBaseline()
         updateCamera()
         refreshStats()
+        maintainPhotos()
+        autoTuneIfNeeded()
         _ = cpuMeter.sample(at: Date())
         timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -215,6 +236,14 @@ final class AppModel: ObservableObject {
         signals.params = settings.signals
         signals.distance = settings.distanceCalibration
         checkInPlanner.perDay = settings.checkInsPerDay
+        photoPlanner.perDay = settings.photosPerDay
+        if !settings.photoDiaryEnabled {
+            recentThumbs = []
+            boutThumb = nil
+        }
+        if settings.photoRetentionDays != old.photoRetentionDays || settings.keepLabeledPhotos != old.keepLabeledPhotos {
+            maintainPhotos()
+        }
         if settings.postureAlertMode != old.postureAlertMode {
             pendingPosture = nil
             gate.cancelAll()
@@ -468,6 +497,10 @@ final class AppModel: ObservableObject {
 
     func deleteAllRecords() {
         persist { try $0.deleteAllRecords() }
+        photos.deleteAll()
+        recentThumbs = []
+        boutThumb = nil
+        refreshReview()
         settings.measurementStartedAt = nil
         refreshStats()
         refreshBaseline()
@@ -679,6 +712,8 @@ final class AppModel: ObservableObject {
             }
         }
 
+        photoDiaryStep(minute, events: events)
+
         if let change = setupDetector.process(minute, baseline: autoBaseline) {
             setupChangeSuspected = true
             persist {
@@ -695,6 +730,10 @@ final class AppModel: ObservableObject {
         }
 
         if minute.end.timeIntervalSince(lastBaselineRefresh) > 3600 { refreshBaseline(now: minute.end) }
+        if minute.end.timeIntervalSince(lastPhotoMaintenance) > 6 * 3600 {
+            maintainPhotos(now: minute.end)
+            autoTuneIfNeeded(now: minute.end)
+        }
     }
 
     private static func priority(_ rule: NudgeRule) -> Int {
@@ -713,6 +752,187 @@ final class AppModel: ObservableObject {
             settings.baselineResetAt = Date()
             refreshBaseline()
         }
+    }
+
+    // MARK: - 사진 일지
+
+    /// 1분마다: 앉은 직후·5분마다 작은 사진을 메모리에 두고, 정해진 순간에 사진 묶음을 남긴다.
+    private func photoDiaryStep(_ minute: PostureMinute, events: [SignalEvent]) {
+        guard settings.photoDiaryEnabled, cameraStatus == .running, experiment == nil, calibration == nil,
+              let bout = tracker.boutStart, minute.boutStart == bout else { return }
+        let now = minute.end
+        let intoBout = now.timeIntervalSince(bout) / 60
+        if boutThumb?.bout != bout, intoBout >= 2, intoBout < 6 {
+            camera.captureThumbnail { [weak self] data in
+                guard let self, let data, self.tracker.boutStart == bout else { return }
+                self.boutThumb = (at: now, bout: bout, data: data)
+            }
+        } else if recentThumbs.last.map({ now.timeIntervalSince($0.at) >= Self.thumbInterval }) ?? true {
+            camera.captureThumbnail { [weak self] data in
+                guard let self, let data, self.settings.photoDiaryEnabled else { return }
+                self.recentThumbs.removeAll { $0.bout != bout || now.timeIntervalSince($0.at) > 35 * 60 }
+                self.recentThumbs.append((at: now, bout: bout, data: data))
+            }
+        }
+
+        let input = SnapshotPlanner.Input(now: now, boutStart: bout, sittingMinutes: tracker.sittingSeconds(at: now) / 60,
+                                          events: events, stillMinutes: signals.stillMinutes(at: now),
+                                          driftScore: signals.driftScore, params: settings.signals,
+                                          roll: Double.random(in: 0..<1))
+        guard !capturingSnapshot, let decision = photoPlanner.decide(input) else { return }
+        capturingSnapshot = true
+        let state = snapshotState(at: now, minute: minute, bout: bout)
+        camera.captureThumbnail { [weak self] data in
+            guard let self else { return }
+            self.capturingSnapshot = false
+            // 얼굴이 없거나 다른 얼굴이 함께 잡혀 찍지 않았으면 세지 않는다.
+            guard let data, self.settings.photoDiaryEnabled else { return }
+            self.saveSnapshot(decision, now: now, bout: bout, nowData: data, state: state)
+        }
+    }
+
+    /// 사진을 남기는 순간 감지기가 본 값
+    private func snapshotState(at now: Date, minute: PostureMinute, bout: Date) -> [String: Double] {
+        var state: [String: Double] = [
+            SnapshotKey.sittingMinutes: tracker.sittingSeconds(at: now) / 60,
+            SnapshotKey.minutesInBout: now.timeIntervalSince(bout) / 60,
+            SnapshotKey.shiftK: settings.signals.shiftK,
+        ]
+        if let still = signals.stillMinutes(at: now) { state[SnapshotKey.stillMinutes] = still }
+        if let lower = signals.driftLower { state[SnapshotKey.driftLower] = lower }
+        if let closer = signals.driftCloser { state[SnapshotKey.driftCloser] = closer }
+        if let score = signals.driftScore { state[SnapshotKey.driftScore] = score }
+        if let cm = signals.distanceCm { state[SnapshotKey.distanceCm] = cm }
+        for feature in PostureFeature.allCases {
+            if let stat = minute[feature] { state[SnapshotKey.feature(feature)] = stat.median }
+        }
+        return state
+    }
+
+    private func saveSnapshot(_ decision: SnapshotPlanner.Decision, now: Date, bout: Date, nowData: Data,
+                              state: [String: Double]) {
+        guard let store else { return }
+        var frames: [(slot: String, at: Date, data: Data)] = []
+        var after = Date.distantPast
+        if let ref = boutThumb, ref.bout == bout {
+            frames.append((slot: "ref", at: ref.at, data: ref.data))
+            after = ref.at
+        }
+        let earlier = recentThumbs.filter { $0.bout == bout && $0.at > after }
+        func closest(_ minutesAgo: Double) -> (at: Date, bout: Date, data: Data)? {
+            earlier.min { a, b in
+                abs(now.timeIntervalSince(a.at) / 60 - minutesAgo) < abs(now.timeIntervalSince(b.at) / 60 - minutesAgo)
+            }
+        }
+        if let m20 = closest(20), now.timeIntervalSince(m20.at) >= 12 * 60 {
+            frames.append((slot: "m20", at: m20.at, data: m20.data))
+        }
+        if let m10 = closest(10), now.timeIntervalSince(m10.at) >= 6 * 60, !frames.contains(where: { $0.at == m10.at }) {
+            frames.append((slot: "m10", at: m10.at, data: m10.data))
+        }
+        frames.append((slot: "now", at: now, data: nowData))
+
+        let snapshot = Snapshot(at: now, reason: decision.reason, rule: decision.rule, variant: decision.variant,
+                                photos: frames.map { SnapshotPhoto(slot: $0.slot, at: $0.at) }, state: state,
+                                settingsVersion: settings.detectionVersion)
+        do {
+            let id = try store.insert(snapshot)
+            do {
+                for frame in frames { try photos.write(frame.data, id: id, slot: frame.slot) }
+            } catch {
+                photos.delete(id: id, slots: frames.map { $0.slot })
+                try? store.markPhotosDeleted(snapshotID: id, at: now)
+                throw error
+            }
+            photoPlanner.taken(decision, at: now, boutStart: bout)
+            refreshReview(now: now)
+        } catch {
+            lastError = "사진 일지를 저장하지 못했어요: \(error)"
+        }
+    }
+
+    /// 리뷰할 사진과 조정 기록을 다시 읽는다.
+    func refreshReview(now: Date = Date()) {
+        guard let store else { return }
+        reviewQueue = ((try? store.snapshotsWithPhotos()) ?? []).filter { $0.needsReview(at: now) }
+        tuningLog = (try? store.tuningLog(since: now.addingTimeInterval(-60 * 86_400))) ?? []
+    }
+
+    func photoURL(_ snapshot: Snapshot, _ photo: SnapshotPhoto) -> URL? {
+        snapshot.id.map { photos.url(id: $0, slot: photo.slot) }
+    }
+
+    /// 리뷰 답을 저장한다. 답이 모두 nil이면 건너뛴 것으로 보고 사진을 지운다.
+    /// 처음 답한 사진 중 일부는 며칠 뒤 한 번 더 보여 주고, 나머지는 바로 지운다 (보관 설정을 켜지 않았다면).
+    func submitReview(_ snapshot: Snapshot, activity: SnapshotActivity?, wanted: SnapshotWant?, match: NudgeFeedback?) {
+        guard let store, let id = snapshot.id else { return }
+        let now = Date()
+        let skipped = activity == nil && wanted == nil && match == nil
+        do {
+            if snapshot.labeledAt == nil {
+                let recheck = !skipped && Double.random(in: 0..<1) < Self.recheckRate
+                try store.updateSnapshotLabel(id: id, activity: activity, wanted: wanted, match: match, labeledAt: now,
+                                              recheckDue: recheck ? now.addingTimeInterval(Self.recheckDelay) : nil)
+                if skipped || (!recheck && !settings.keepLabeledPhotos) { deletePhotos(of: snapshot, at: now) }
+            } else {
+                try store.updateSnapshotRecheck(id: id, activity: activity, wanted: wanted, at: now)
+                if skipped || !settings.keepLabeledPhotos { deletePhotos(of: snapshot, at: now) }
+            }
+        } catch {
+            lastError = "\(error)"
+        }
+        autoTuneIfNeeded(now: now)
+        refreshReview(now: now)
+    }
+
+    private func deletePhotos(of snapshot: Snapshot, at now: Date) {
+        guard let id = snapshot.id else { return }
+        photos.delete(id: id, slots: snapshot.photos.map(\.slot))
+        persist { try $0.markPhotosDeleted(snapshotID: id, at: now) }
+    }
+
+    /// 보관 기간이 지났거나 답한 사진을 지운다 (시작할 때, 6시간마다, 보관 설정을 바꿨을 때).
+    func maintainPhotos(now: Date = Date()) {
+        lastPhotoMaintenance = now
+        guard let store else { return }
+        let withPhotos = (try? store.snapshotsWithPhotos()) ?? []
+        for snapshot in PhotoStore.expired(withPhotos, now: now, retentionDays: settings.photoRetentionDays,
+                                           keepLabeled: settings.keepLabeledPhotos) {
+            deletePhotos(of: snapshot, at: now)
+        }
+        refreshReview(now: now)
+    }
+
+    func deleteAllPhotos() {
+        photos.deleteAll()
+        persist { try $0.markAllPhotosDeleted(at: Date()) }
+        recentThumbs = []
+        boutThumb = nil
+        refreshReview()
+    }
+
+    /// 답이 쌓였으면 판정값을 하루 한 칸 옮긴다 (최근 60일 답).
+    private func autoTuneIfNeeded(now: Date = Date()) {
+        guard settings.autoTune, let store else { return }
+        let answered = ((try? store.snapshots(since: now.addingTimeInterval(-60 * 86_400))) ?? []).filter { $0.labeledAt != nil }
+        let history = (try? store.tuningLog(since: now.addingTimeInterval(-2 * 86_400))) ?? []
+        var params = settings.signals
+        let changes = GradualTuner.tune(answered, params: &params, history: history, now: now)
+        guard !changes.isEmpty else { return }
+        for change in changes { persist { try $0.insert(change) } }
+        settings.signals = params
+        refreshReview(now: now)
+    }
+
+    /// 자동 조정한 판정값을 처음 값으로 되돌린다. 그날은 다시 옮기지 않는다.
+    func resetTuning() {
+        let now = Date()
+        persist {
+            try $0.insert(TuningChange(at: now, parameter: "reset", oldValue: 0, newValue: 0, samples: 0,
+                                       note: "판정값을 처음 값으로 되돌림"))
+        }
+        settings.signals = SignalParameters()
+        refreshReview(now: now)
     }
 
     // MARK: - 보정 (평소 자세, 거리)
@@ -867,6 +1087,8 @@ final class AppModel: ObservableObject {
 
     private func handleAway() {
         screenLocked = true
+        recentThumbs = []
+        boutThumb = nil
         if experiment != nil { finishExperiment() }
         updateCamera()
         let now = Date()
