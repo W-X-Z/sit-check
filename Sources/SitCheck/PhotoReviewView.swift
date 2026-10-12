@@ -32,7 +32,7 @@ struct PhotoReviewView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .frame(width: 760)
+        .frame(width: 880)
         .onAppear { model.refreshReview() }
     }
 
@@ -60,6 +60,8 @@ struct PhotoReviewView: View {
         }
     }
 
+    static let photoWidth: CGFloat = 200
+
     private func photoStrip(_ snapshot: Snapshot) -> some View {
         let ordered = snapshot.photos.sorted {
             (SnapshotPhoto.order.firstIndex(of: $0.slot) ?? 9) < (SnapshotPhoto.order.firstIndex(of: $1.slot) ?? 9)
@@ -67,25 +69,38 @@ struct PhotoReviewView: View {
         return HStack(alignment: .top, spacing: 10) {
             ForEach(ordered, id: \.slot) { photo in
                 VStack(spacing: 4) {
-                    if let url = model.photoURL(snapshot, photo), let image = NSImage(contentsOf: url) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 170)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6)
-                                .stroke(photo.slot == "now" ? Color.accentColor : Color.clear, lineWidth: 2))
-                    } else {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.secondary.opacity(0.15))
-                            .frame(width: 170, height: 128)
-                            .overlay(Text("사진 없음").font(.caption).foregroundStyle(.secondary))
-                    }
+                    photoView(snapshot, photo)
                     Text("\(SnapshotCopy.slotTitle(photo, snapshotAt: snapshot.at)) · \(photo.at.formatted(date: .omitted, time: .shortened))")
                         .font(.caption)
                         .foregroundStyle(photo.slot == "now" ? Color.primary : Color.secondary)
                 }
             }
+        }
+    }
+
+    /// 파일을 직접 읽어 픽셀 크기대로 비율을 정하고, 크기를 명시해 그린다. 누르면 미리보기 앱으로 크게 본다.
+    @ViewBuilder
+    private func photoView(_ snapshot: Snapshot, _ photo: SnapshotPhoto) -> some View {
+        let url = model.photoURL(snapshot, photo)
+        if let url, let image = ThumbnailEncoder.load(url), image.width > 0, image.height > 0 {
+            let height = Self.photoWidth * CGFloat(image.height) / CGFloat(image.width)
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: Self.photoWidth, height: height)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke(photo.slot == "now" ? Color.accentColor : Color.clear, lineWidth: 2))
+                .onTapGesture { NSWorkspace.shared.open(url) }
+                .help("눌러서 크게 보기")
+        } else {
+            let exists = url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: Self.photoWidth, height: Self.photoWidth * 3 / 4)
+                .overlay(Text(exists ? "사진을 읽지 못했어요" : "사진 파일이 없어요")
+                    .font(.caption)
+                    .foregroundStyle(.secondary))
         }
     }
 

@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreImage
 import CoreMedia
-import ImageIO
 import SwiftUI
 import Vision
 import SitCheckCore
@@ -227,7 +226,7 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             let requests = pendingThumbnails
             pendingThumbnails = []
             // 사용자 한 사람만 보일 때만 찍는다 (다른 사람이 함께 찍히지 않게).
-            let data = faces == 1 ? jpeg(pixels) : nil
+            let data = faces == 1 ? ThumbnailEncoder.jpeg(from: pixels, width: Self.thumbnailWidth, context: imageContext) : nil
             for completion in requests { Task { @MainActor in completion(data) } }
         }
 
@@ -237,16 +236,6 @@ final class PostureCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     private static let minConfidence: Float = 0.2
-
-    /// 거울처럼 좌우를 뒤집고 줄여서 JPEG로 만든다.
-    private func jpeg(_ pixels: CVPixelBuffer) -> Data? {
-        var image = CIImage(cvPixelBuffer: pixels).oriented(.upMirrored)
-        let scale = Self.thumbnailWidth / max(image.extent.width, 1)
-        if scale < 1 { image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) }
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-        let quality = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
-        return imageContext.jpegRepresentation(of: image, colorSpace: space, options: [quality: 0.7])
-    }
 
     /// 프레임 하나를 분석한다. 찾은 얼굴 수도 함께 돌려준다.
     private func analyze(_ pixels: CVPixelBuffer, at now: Date) -> (PostureSample?, PosePoints?, Int) {
