@@ -138,8 +138,8 @@ final class GradualTunerTests: XCTestCase {
 
     func testOnlyRandomAndSameRuleAnswersCount() {
         // 다른 규칙(R6) 알림 순간의 '네'와 감지가 틀렸다는 답은 R5 판정값에 쓰지 않는다.
-        let noise = (0..<6).map { answer(SnapshotKey.stillMinutes, 5, .yes, reason: .event, rule: .drift) }
-            + (0..<6).map { answer(SnapshotKey.stillMinutes, 50, .no, reason: .event, rule: .stillness, match: .wrong) }
+        let noise = (0..<6).map { _ in answer(SnapshotKey.stillMinutes, 5, .yes, reason: .event, rule: .drift) }
+            + (0..<6).map { _ in answer(SnapshotKey.stillMinutes, 50, .no, reason: .event, rule: .stillness, match: .wrong) }
         var params = SignalParameters()
         let eval = GradualTuner.evaluate(stillAnswers() + noise, params: params).first { $0.parameter == "stillMinutes" }
         XCTAssertEqual(eval?.samples, 15)
