@@ -1,7 +1,7 @@
 import Foundation
 
 /// 카메라 프레임에서 뽑는 특징. 위치는 프레임 기준 0~1이고 왼쪽 위가 원점이다 (아래로 갈수록 y가 커짐).
-/// 좌우를 비교하는 특징(어깨 높이 차 등)은 일부러 두지 않는다 (진단 전 대칭 판정 금지, NFR-09).
+/// 좌우 특징(어깨·고개 기울기, 몸 치우침)은 사용자가 켠 '좌우 비대칭' 판정에만 쓴다 (`PostureChecker`).
 public enum PostureFeature: String, Codable, CaseIterable, Sendable {
     /// 얼굴 각도 (도). 알림에는 쓰지 않고 움직임 감지·품질 확인·비공개 기록에만 쓴다.
     case roll, yaw, pitch
@@ -13,10 +13,18 @@ public enum PostureFeature: String, Codable, CaseIterable, Sendable {
     case eyeDistance
     /// 양 어깨 중점의 y (분석 구성: 얼굴 + 2D 몸 자세)
     case shoulderY
-    /// (어깨 중점 y − 코 y) ÷ 어깨 폭, 픽셀 단위 비율 (분석 구성: 얼굴 + 2D 몸 자세)
+    /// (두 눈 중점 높이 − 어깨 중점 높이) ÷ 어깨 폭, 픽셀 단위 비율 (분석 구성: 얼굴 + 2D 몸 자세)
     case neckRatio
     /// 어깨 폭 ÷ 프레임 폭 (분석 구성: 얼굴 + 2D 몸 자세)
     case shoulderWidth
+    /// 어깨선 기울기 (도, 양수 = 사용자의 왼쪽 어깨가 높음)
+    case shoulderTilt
+    /// 눈선 기울기 (도, 양수 = 고개가 사용자의 오른쪽으로 기욺)
+    case headTilt
+    /// (두 눈 중점 x − 어깨 중점 x) ÷ 어깨 폭 (양수 = 머리가 사용자의 왼쪽으로 치우침)
+    case sideLean
+    /// 얼굴 폭 ÷ 어깨 폭, 픽셀 단위 (커지면 머리가 어깨보다 앞으로 나옴)
+    case headScale
 }
 
 /// 카메라 한 프레임에서 얻은 값. 얼굴을 못 찾은 프레임은 샘플 자체가 없다(nil).
@@ -33,11 +41,16 @@ public struct PostureSample: Equatable, Sendable {
     public var shoulderY: Double?
     public var neckRatio: Double?
     public var shoulderWidth: Double?
+    public var shoulderTilt: Double?
+    public var headTilt: Double?
+    public var sideLean: Double?
+    public var headScale: Double?
 
     public init(at: Date, roll: Double? = nil, yaw: Double? = nil, pitch: Double? = nil,
                 faceWidth: Double, faceX: Double = 0.5, faceY: Double = 0.5,
                 eyeDistance: Double? = nil, shoulderY: Double? = nil,
-                neckRatio: Double? = nil, shoulderWidth: Double? = nil) {
+                neckRatio: Double? = nil, shoulderWidth: Double? = nil,
+                shoulderTilt: Double? = nil, headTilt: Double? = nil, sideLean: Double? = nil, headScale: Double? = nil) {
         self.at = at
         self.roll = roll
         self.yaw = yaw
@@ -49,6 +62,10 @@ public struct PostureSample: Equatable, Sendable {
         self.shoulderY = shoulderY
         self.neckRatio = neckRatio
         self.shoulderWidth = shoulderWidth
+        self.shoulderTilt = shoulderTilt
+        self.headTilt = headTilt
+        self.sideLean = sideLean
+        self.headScale = headScale
     }
 
     public func value(_ feature: PostureFeature) -> Double? {
@@ -63,6 +80,10 @@ public struct PostureSample: Equatable, Sendable {
         case .shoulderY: return shoulderY
         case .neckRatio: return neckRatio
         case .shoulderWidth: return shoulderWidth
+        case .shoulderTilt: return shoulderTilt
+        case .headTilt: return headTilt
+        case .sideLean: return sideLean
+        case .headScale: return headScale
         }
     }
 }

@@ -164,7 +164,7 @@ public struct NudgeScheduler: Sendable {
     }
 }
 
-/// 알림 카드 문구 규칙: 첫 줄은 사실만, 둘째 줄은 행동 하나만. 평가·점수 문구는 쓰지 않는다.
+/// 알림 카드 문구 규칙: 첫 줄은 사실만, 둘째 줄은 행동 하나만. 점수 문구는 쓰지 않는다.
 public enum NudgeCopy {
     public static func reason(rule: NudgeRule, sittingMinutes: Int) -> String {
         switch rule {
@@ -176,6 +176,8 @@ public enum NudgeCopy {
         case .drift: return "\(sittingMinutes)분째 앉아 있고, 앉은 직후보다 자세가 옮겨 갔어요"
         case .near: return "화면에 가까운 상태가 이어지고 있어요"
         case .setupChange: return "자리나 화면 위치가 바뀐 것 같아요"
+        case .forwardHead: return "머리가 어깨보다 앞으로 나온 자세가 이어지고 있어요"
+        case .asymmetry: return "몸이 한쪽으로 기운 자세가 이어지고 있어요"
         }
     }
 
@@ -187,7 +189,8 @@ public enum NudgeCopy {
         return "앉은 채로 \(n)개만 해 보세요"
     }
 
-    /// 카메라 신호 카드 문구. 무엇이 얼마나 이어졌는지만 말하고, 고칠 방향은 말하지 않는다.
+    /// 카메라 신호 카드 문구. R5–R7은 무엇이 얼마나 이어졌는지만 말하고 고칠 방향은 말하지 않는다.
+    /// R9·R10은 바른 자세 판정이므로 잰 값과 고칠 방향 한 줄을 준다.
     public static func posture(_ event: SignalEvent, sittingMinutes: Int,
                                calendar: Calendar = .current) -> (reason: String, action: String) {
         switch event.rule {
@@ -209,6 +212,13 @@ public enum NudgeCopy {
             let minutes = Int((event.detail["minutes"] ?? 0).rounded())
             return ("화면까지 약 \(cm)cm인 상태가 \(minutes)분째예요",
                     "원하면 의자나 화면 위치를 한 번 확인해 보세요")
+        case .forwardHead, .asymmetry:
+            let minutes = Int((event.detail["bad_minutes"] ?? 0).rounded())
+            let reading = PostureReading(detail: event.detail)
+            let issues = PostureIssue.allCases.filter { event.detail[$0.rawValue] == 1 }
+            let facts = issues.compactMap { reading.phrase($0) }.joined(separator: ", ")
+            return ("\(minutes)분째 자세가 바르지 않아요" + (facts.isEmpty ? "" : " (\(facts))"),
+                    issues.first?.action ?? "자세를 한 번 고쳐 앉아 보세요")
         default:
             return (reason(rule: event.rule, sittingMinutes: sittingMinutes), "원하면 자세를 한 번 바꿔 보세요")
         }

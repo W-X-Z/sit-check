@@ -25,16 +25,10 @@ struct SitCheckApp: App {
                 .environmentObject(model)
         }
         .windowResizability(.contentSize)
-
-        Window("자세 코치 실험·측정", id: "experiments") {
-            ExperimentsView()
-                .environmentObject(model)
-        }
-        .windowResizability(.contentSize)
     }
 }
 
-/// FR-01, FR-13: 연속 착석 시간과 상태 아이콘
+/// FR-01: 연속 착석 시간과 상태 아이콘
 struct MenuBarLabel: View {
     @ObservedObject var model: AppModel
 
@@ -42,6 +36,9 @@ struct MenuBarLabel: View {
         HStack(spacing: 3) {
             Image(systemName: model.statusSymbol)
             if model.isSitting {
+                if model.isPostureBad {
+                    Text("자세")
+                }
                 Text("\(model.sittingMinutes)분")
                     .monospacedDigit()
             }
