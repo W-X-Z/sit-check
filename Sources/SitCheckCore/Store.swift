@@ -3,10 +3,12 @@ import SQLite3
 
 public enum StoreError: Error, CustomStringConvertible {
     case sqlite(String)
+    case file(String)
 
     public var description: String {
         switch self {
         case .sqlite(let message): return "SQLite: \(message)"
+        case .file(let message): return message
         }
     }
 }
@@ -15,6 +17,7 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 
 /// 로컬 SQLite 파일 하나 (NFR-02). 외부 의존성 없이 시스템 SQLite3를 쓴다.
 /// 영상과 프레임별 좌표는 저장하지 않고, 분 단위 요약 수치만 남긴다.
+/// 사진 일지를 켠 경우의 사진 파일은 `PhotoStore`가 따로 두고, 여기에는 시각·감지 값·답만 둔다.
 public final class Store {
     private var db: OpaquePointer?
     public let path: String
@@ -22,7 +25,7 @@ public final class Store {
     private let decoder = JSONDecoder()
 
     /// 스키마 버전 (PRAGMA user_version)
-    public static let schemaVersion = 2
+    public static let schemaVersion = 3
 
     /// - Parameter path: 파일 경로. 테스트에서는 ":memory:"
     public init(path: String) throws {
@@ -126,6 +129,44 @@ public final class Store {
             PRAGMA user_version = 2;
             """)
         }
+
+        if try userVersion() < 3 {
+            try exec("""
+            CREATE TABLE IF NOT EXISTS snapshot (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at REAL NOT NULL,
+                reason TEXT NOT NULL,
+                rule_id TEXT,
+                variant TEXT,
+                photos TEXT NOT NULL,
+                photos_deleted_at REAL,
+                state TEXT NOT NULL,
+                settings_version INTEGER NOT NULL DEFAULT 0,
+                activity TEXT,
+                wanted TEXT,
+                match_answer TEXT,
+                labeled_at REAL,
+                recheck_due REAL,
+                recheck_activity TEXT,
+                recheck_wanted TEXT,
+                recheck_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS tuning_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at REAL NOT NULL,
+                parameter TEXT NOT NULL,
+                old_value REAL NOT NULL,
+                new_value REAL NOT NULL,
+                samples INTEGER NOT NULL,
+                score_before REAL,
+                score_after REAL,
+                note TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_snapshot_at ON snapshot(at);
+            CREATE INDEX IF NOT EXISTS idx_tuning_log_at ON tuning_log(at);
+            PRAGMA user_version = 3;
+            """)
+        }
     }
 
     public func userVersion() throws -> Int {
@@ -215,6 +256,76 @@ public final class Store {
         return sqlite3_last_insert_rowid(db)
     }
 
+    @discardableResult
+    public func insert(_ snapshot: Snapshot) throws -> Int64 {
+        let photos = String(decoding: try encoder.encode(snapshot.photos), as: UTF8.self)
+        let state = String(decoding: try encoder.encode(snapshot.state), as: UTF8.self)
+        try run(
+            """
+            INSERT INTO snapshot (at, reason, rule_id, variant, photos, photos_deleted_at, state, settings_version,
+                                  activity, wanted, match_answer, labeled_at, recheck_due, recheck_activity, recheck_wanted, recheck_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [.double(snapshot.at.timeIntervalSince1970), .text(snapshot.reason.rawValue),
+             snapshot.rule.map { Value.text($0.rawValue) } ?? Value.null,
+             snapshot.variant.map { Value.text($0) } ?? Value.null,
+             .text(photos), Self.date(snapshot.photosDeletedAt), .text(state), .int(Int64(snapshot.settingsVersion)),
+             snapshot.activity.map { Value.text($0.rawValue) } ?? Value.null,
+             snapshot.wanted.map { Value.text($0.rawValue) } ?? Value.null,
+             snapshot.match.map { Value.text($0.rawValue) } ?? Value.null,
+             Self.date(snapshot.labeledAt), Self.date(snapshot.recheckDue),
+             snapshot.recheckActivity.map { Value.text($0.rawValue) } ?? Value.null,
+             snapshot.recheckWanted.map { Value.text($0.rawValue) } ?? Value.null,
+             Self.date(snapshot.recheckAt)]
+        )
+        return sqlite3_last_insert_rowid(db)
+    }
+
+    /// 처음 답 (건너뛰면 답은 모두 nil이고 `labeledAt`만 채운다)
+    public func updateSnapshotLabel(id: Int64, activity: SnapshotActivity?, wanted: SnapshotWant?, match: NudgeFeedback?,
+                                    labeledAt: Date, recheckDue: Date?) throws {
+        try run(
+            "UPDATE snapshot SET activity = ?, wanted = ?, match_answer = ?, labeled_at = ?, recheck_due = ? WHERE id = ?",
+            [activity.map { Value.text($0.rawValue) } ?? Value.null, wanted.map { Value.text($0.rawValue) } ?? Value.null,
+             match.map { Value.text($0.rawValue) } ?? Value.null, .double(labeledAt.timeIntervalSince1970),
+             Self.date(recheckDue), .int(id)]
+        )
+    }
+
+    /// 며칠 뒤 다시 본 답
+    public func updateSnapshotRecheck(id: Int64, activity: SnapshotActivity?, wanted: SnapshotWant?, at: Date) throws {
+        try run(
+            "UPDATE snapshot SET recheck_activity = ?, recheck_wanted = ?, recheck_at = ? WHERE id = ?",
+            [activity.map { Value.text($0.rawValue) } ?? Value.null, wanted.map { Value.text($0.rawValue) } ?? Value.null,
+             .double(at.timeIntervalSince1970), .int(id)]
+        )
+    }
+
+    public func markPhotosDeleted(snapshotID id: Int64, at: Date) throws {
+        try run("UPDATE snapshot SET photos_deleted_at = ? WHERE id = ? AND photos_deleted_at IS NULL",
+                [.double(at.timeIntervalSince1970), .int(id)])
+    }
+
+    /// 사진 파일을 모두 지웠을 때
+    public func markAllPhotosDeleted(at: Date) throws {
+        try run("UPDATE snapshot SET photos_deleted_at = ? WHERE photos_deleted_at IS NULL", [.double(at.timeIntervalSince1970)])
+    }
+
+    @discardableResult
+    public func insert(_ change: TuningChange) throws -> Int64 {
+        try run(
+            """
+            INSERT INTO tuning_log (at, parameter, old_value, new_value, samples, score_before, score_after, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [.double(change.at.timeIntervalSince1970), .text(change.parameter), .double(change.oldValue),
+             .double(change.newValue), .int(Int64(change.samples)),
+             change.scoreBefore.map { Value.double($0) } ?? Value.null,
+             change.scoreAfter.map { Value.double($0) } ?? Value.null, .text(change.note)]
+        )
+        return sqlite3_last_insert_rowid(db)
+    }
+
     public func saveSettings(_ settings: AppSettings) throws {
         let json = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
         try run("INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [.text(json)])
@@ -231,6 +342,7 @@ public final class Store {
         try exec("""
         DELETE FROM stretch_log; DELETE FROM nudge; DELETE FROM sit_bout;
         DELETE FROM posture_minute; DELETE FROM posture_event; DELETE FROM checkin;
+        DELETE FROM snapshot; DELETE FROM tuning_log;
         """)
     }
 
@@ -350,6 +462,63 @@ public final class Store {
         }
     }
 
+    public func snapshots(since: Date) throws -> [Snapshot] {
+        try fetchSnapshots(where: "at >= ?", [.double(since.timeIntervalSince1970)])
+    }
+
+    /// 사진 파일이 아직 남아 있는 것 (리뷰, 보관 기간 정리)
+    public func snapshotsWithPhotos() throws -> [Snapshot] {
+        try fetchSnapshots(where: "photos_deleted_at IS NULL", [])
+    }
+
+    private func fetchSnapshots(where condition: String, _ values: [Value]) throws -> [Snapshot] {
+        let decoder = self.decoder
+        return try query("""
+            SELECT id, at, reason, rule_id, variant, photos, photos_deleted_at, state, settings_version,
+                   activity, wanted, match_answer, labeled_at, recheck_due, recheck_activity, recheck_wanted, recheck_at
+            FROM snapshot WHERE \(condition) ORDER BY at, id
+            """, values) { stmt in
+            let photos = (try? decoder.decode([SnapshotPhoto].self, from: Data((columnText(stmt, 5) ?? "[]").utf8))) ?? []
+            let state = (try? decoder.decode([String: Double].self, from: Data((columnText(stmt, 7) ?? "{}").utf8))) ?? [:]
+            return Snapshot(
+                id: sqlite3_column_int64(stmt, 0),
+                at: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1)),
+                reason: SnapshotReason(rawValue: columnText(stmt, 2) ?? "") ?? .random,
+                rule: columnText(stmt, 3).flatMap(NudgeRule.init(rawValue:)),
+                variant: columnText(stmt, 4),
+                photos: photos,
+                photosDeletedAt: columnDouble(stmt, 6).map { Date(timeIntervalSince1970: $0) },
+                state: state,
+                settingsVersion: Int(sqlite3_column_int64(stmt, 8)),
+                activity: columnText(stmt, 9).flatMap(SnapshotActivity.init(rawValue:)),
+                wanted: columnText(stmt, 10).flatMap(SnapshotWant.init(rawValue:)),
+                match: columnText(stmt, 11).flatMap(NudgeFeedback.init(rawValue:)),
+                labeledAt: columnDouble(stmt, 12).map { Date(timeIntervalSince1970: $0) },
+                recheckDue: columnDouble(stmt, 13).map { Date(timeIntervalSince1970: $0) },
+                recheckActivity: columnText(stmt, 14).flatMap(SnapshotActivity.init(rawValue:)),
+                recheckWanted: columnText(stmt, 15).flatMap(SnapshotWant.init(rawValue:)),
+                recheckAt: columnDouble(stmt, 16).map { Date(timeIntervalSince1970: $0) }
+            )
+        }
+    }
+
+    public func tuningLog(since: Date) throws -> [TuningChange] {
+        try query("""
+            SELECT id, at, parameter, old_value, new_value, samples, score_before, score_after, note
+            FROM tuning_log WHERE at >= ? ORDER BY at, id
+            """, [.double(since.timeIntervalSince1970)]) { stmt in
+            TuningChange(id: sqlite3_column_int64(stmt, 0),
+                         at: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 1)),
+                         parameter: columnText(stmt, 2) ?? "",
+                         oldValue: sqlite3_column_double(stmt, 3),
+                         newValue: sqlite3_column_double(stmt, 4),
+                         samples: Int(sqlite3_column_int64(stmt, 5)),
+                         scoreBefore: columnDouble(stmt, 6),
+                         scoreAfter: columnDouble(stmt, 7),
+                         note: columnText(stmt, 8) ?? "")
+        }
+    }
+
     // MARK: - CSV export
 
     /// 테이블별 CSV 파일을 `directory`에 쓴다. 시각은 로컬 시간 ISO 8601.
@@ -398,6 +567,21 @@ public final class Store {
                   })
         try write("checkin.csv", header: ["at", "question", "answer", "still_minutes", "drift_score"],
                   rows: try checkIns(since: all).map { [ts($0.at), $0.question, $0.answer.rawValue, num($0.stillMinutes, 1), num($0.driftScore, 2)] })
+        // 사진 파일 자체는 내보내지 않는다.
+        try write("snapshot.csv", header: ["at", "reason", "rule_id", "variant", "photo_count", "photos_deleted_at", "activity", "wanted",
+                                           "match", "labeled_at", "recheck_activity", "recheck_wanted", "state"],
+                  rows: try snapshots(since: all).map { s in
+                      let state = s.state.keys.sorted().map { "\($0)=\(num(s.state[$0], 3))" }.joined(separator: " ")
+                      return [ts(s.at), s.reason.rawValue, s.rule?.rawValue ?? "", s.variant ?? "", "\(s.photos.count)",
+                              s.photosDeletedAt.map(ts) ?? "", s.activity?.rawValue ?? "", s.wanted?.rawValue ?? "",
+                              s.match?.rawValue ?? "", s.labeledAt.map(ts) ?? "", s.recheckActivity?.rawValue ?? "",
+                              s.recheckWanted?.rawValue ?? "", state]
+                  })
+        try write("tuning_log.csv", header: ["at", "parameter", "old_value", "new_value", "samples", "score_before", "score_after", "note"],
+                  rows: try tuningLog(since: all).map { c in
+                      [ts(c.at), c.parameter, num(c.oldValue, 2), num(c.newValue, 2), "\(c.samples)",
+                       num(c.scoreBefore, 3), num(c.scoreAfter, 3), c.note]
+                  })
         return files
     }
 
@@ -405,6 +589,10 @@ public final class Store {
 
     private enum Value {
         case int(Int64), double(Double), text(String), null
+    }
+
+    private static func date(_ d: Date?) -> Value {
+        d.map { Value.double($0.timeIntervalSince1970) } ?? Value.null
     }
 
     private func exec(_ sql: String) throws {

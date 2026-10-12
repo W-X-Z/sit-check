@@ -51,6 +51,20 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// '자리가 바뀌었어요 → 다시 배우기'를 누른 시각. 자동 기준은 이 뒤의 기록으로만 만든다.
     public var baselineResetAt: Date?
 
+    // MARK: 사진 일지
+
+    /// 실제로 일하는 동안 사진을 하루 몇 장 남겨 두고 나중에 직접 보고 답한다 (기본 꺼짐).
+    /// 사진은 이 Mac에만 두고, 답하면 바로 지우며, 답하지 않아도 보관 기간이 지나면 지운다.
+    public var photoDiaryEnabled: Bool = false
+    /// 하루 최대 사진 묶음 수
+    public var photosPerDay: Int = 8
+    /// 사진 보관 기간 (일)
+    public var photoRetentionDays: Int = 14
+    /// 답한 뒤에도 보관 기간까지 사진을 남길지 (기본: 답하면 바로 지움)
+    public var keepLabeledPhotos: Bool = false
+    /// 답이 쌓이면 판정값(R5 분, R6 배수, R7 cm, 자세 변화 기준)을 하루 한 칸씩 옮긴다.
+    public var autoTune: Bool = true
+
     // MARK: 예전 R2·R3 (기록 전용)
 
     public var tiltThresholdDegrees: Int = 12
@@ -110,6 +124,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
         postureBaseline = try c.decodeIfPresent(PostureBaseline.self, forKey: .postureBaseline)
         measurementStartedAt = try c.decodeIfPresent(Date.self, forKey: .measurementStartedAt)
         baselineResetAt = try c.decodeIfPresent(Date.self, forKey: .baselineResetAt)
+        photoDiaryEnabled = try c.decodeIfPresent(Bool.self, forKey: .photoDiaryEnabled) ?? d.photoDiaryEnabled
+        photosPerDay = try c.decodeIfPresent(Int.self, forKey: .photosPerDay) ?? d.photosPerDay
+        photoRetentionDays = try c.decodeIfPresent(Int.self, forKey: .photoRetentionDays) ?? d.photoRetentionDays
+        keepLabeledPhotos = try c.decodeIfPresent(Bool.self, forKey: .keepLabeledPhotos) ?? d.keepLabeledPhotos
+        autoTune = try c.decodeIfPresent(Bool.self, forKey: .autoTune) ?? d.autoTune
         tiltThresholdDegrees = try c.decodeIfPresent(Int.self, forKey: .tiltThresholdDegrees) ?? d.tiltThresholdDegrees
         approachThresholdPercent = try c.decodeIfPresent(Int.self, forKey: .approachThresholdPercent) ?? d.approachThresholdPercent
         postureHoldSeconds = try c.decodeIfPresent(Int.self, forKey: .postureHoldSeconds) ?? d.postureHoldSeconds

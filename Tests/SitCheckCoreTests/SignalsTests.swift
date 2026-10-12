@@ -501,7 +501,7 @@ final class StoreV2Tests: XCTestCase {
         XCTAssertEqual(try store.bouts(since: day0).first?.endReason, .away)
 
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        XCTAssertEqual(try store.exportCSV(to: dir).count, 6)
+        XCTAssertEqual(try store.exportCSV(to: dir).count, 8)
         try? FileManager.default.removeItem(at: dir)
 
         try store.deleteAllRecords()
@@ -523,7 +523,7 @@ final class StoreV2Tests: XCTestCase {
         sqlite3_close(db)
 
         let store = try Store(path: path)
-        XCTAssertEqual(try store.userVersion(), 2)
+        XCTAssertEqual(try store.userVersion(), Store.schemaVersion)
         XCTAssertNil(try store.bouts(since: day0).first?.endReason)
         XCTAssertEqual(try store.nudges(since: day0).first?.rule, .tiltRotation)
         XCTAssertNoThrow(try store.insert(minute(0)))
