@@ -143,11 +143,13 @@ public final class Store {
                 state TEXT NOT NULL,
                 settings_version INTEGER NOT NULL DEFAULT 0,
                 activity TEXT,
+                observed TEXT,
                 wanted TEXT,
                 match_answer TEXT,
                 labeled_at REAL,
                 recheck_due REAL,
                 recheck_activity TEXT,
+                recheck_observed TEXT,
                 recheck_wanted TEXT,
                 recheck_at REAL
             );
@@ -263,18 +265,21 @@ public final class Store {
         try run(
             """
             INSERT INTO snapshot (at, reason, rule_id, variant, photos, photos_deleted_at, state, settings_version,
-                                  activity, wanted, match_answer, labeled_at, recheck_due, recheck_activity, recheck_wanted, recheck_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  activity, observed, wanted, match_answer, labeled_at, recheck_due, recheck_activity,
+                                  recheck_observed, recheck_wanted, recheck_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [.double(snapshot.at.timeIntervalSince1970), .text(snapshot.reason.rawValue),
              snapshot.rule.map { Value.text($0.rawValue) } ?? Value.null,
              snapshot.variant.map { Value.text($0) } ?? Value.null,
              .text(photos), Self.date(snapshot.photosDeletedAt), .text(state), .int(Int64(snapshot.settingsVersion)),
              snapshot.activity.map { Value.text($0.rawValue) } ?? Value.null,
+             Snapshot.encode(snapshot.observed).map { Value.text($0) } ?? Value.null,
              snapshot.wanted.map { Value.text($0.rawValue) } ?? Value.null,
              snapshot.match.map { Value.text($0.rawValue) } ?? Value.null,
              Self.date(snapshot.labeledAt), Self.date(snapshot.recheckDue),
              snapshot.recheckActivity.map { Value.text($0.rawValue) } ?? Value.null,
+             Snapshot.encode(snapshot.recheckObserved).map { Value.text($0) } ?? Value.null,
              snapshot.recheckWanted.map { Value.text($0.rawValue) } ?? Value.null,
              Self.date(snapshot.recheckAt)]
         )
@@ -282,21 +287,26 @@ public final class Store {
     }
 
     /// 처음 답 (건너뛰면 답은 모두 nil이고 `labeledAt`만 채운다)
-    public func updateSnapshotLabel(id: Int64, activity: SnapshotActivity?, wanted: SnapshotWant?, match: NudgeFeedback?,
-                                    labeledAt: Date, recheckDue: Date?) throws {
+    public func updateSnapshotLabel(id: Int64, activity: SnapshotActivity?, observed: Set<PostureIssue>?, wanted: SnapshotWant?,
+                                    match: NudgeFeedback?, labeledAt: Date, recheckDue: Date?) throws {
         try run(
-            "UPDATE snapshot SET activity = ?, wanted = ?, match_answer = ?, labeled_at = ?, recheck_due = ? WHERE id = ?",
-            [activity.map { Value.text($0.rawValue) } ?? Value.null, wanted.map { Value.text($0.rawValue) } ?? Value.null,
+            "UPDATE snapshot SET activity = ?, observed = ?, wanted = ?, match_answer = ?, labeled_at = ?, recheck_due = ? WHERE id = ?",
+            [activity.map { Value.text($0.rawValue) } ?? Value.null,
+             Snapshot.encode(observed).map { Value.text($0) } ?? Value.null,
+             wanted.map { Value.text($0.rawValue) } ?? Value.null,
              match.map { Value.text($0.rawValue) } ?? Value.null, .double(labeledAt.timeIntervalSince1970),
              Self.date(recheckDue), .int(id)]
         )
     }
 
     /// 며칠 뒤 다시 본 답
-    public func updateSnapshotRecheck(id: Int64, activity: SnapshotActivity?, wanted: SnapshotWant?, at: Date) throws {
+    public func updateSnapshotRecheck(id: Int64, activity: SnapshotActivity?, observed: Set<PostureIssue>?, wanted: SnapshotWant?,
+                                      at: Date) throws {
         try run(
-            "UPDATE snapshot SET recheck_activity = ?, recheck_wanted = ?, recheck_at = ? WHERE id = ?",
-            [activity.map { Value.text($0.rawValue) } ?? Value.null, wanted.map { Value.text($0.rawValue) } ?? Value.null,
+            "UPDATE snapshot SET recheck_activity = ?, recheck_observed = ?, recheck_wanted = ?, recheck_at = ? WHERE id = ?",
+            [activity.map { Value.text($0.rawValue) } ?? Value.null,
+             Snapshot.encode(observed).map { Value.text($0) } ?? Value.null,
+             wanted.map { Value.text($0.rawValue) } ?? Value.null,
              .double(at.timeIntervalSince1970), .int(id)]
         )
     }
@@ -475,7 +485,8 @@ public final class Store {
         let decoder = self.decoder
         return try query("""
             SELECT id, at, reason, rule_id, variant, photos, photos_deleted_at, state, settings_version,
-                   activity, wanted, match_answer, labeled_at, recheck_due, recheck_activity, recheck_wanted, recheck_at
+                   activity, wanted, match_answer, labeled_at, recheck_due, recheck_activity, recheck_wanted, recheck_at,
+                   observed, recheck_observed
             FROM snapshot WHERE \(condition) ORDER BY at, id
             """, values) { stmt in
             let photos = (try? decoder.decode([SnapshotPhoto].self, from: Data((columnText(stmt, 5) ?? "[]").utf8))) ?? []
@@ -491,11 +502,13 @@ public final class Store {
                 state: state,
                 settingsVersion: Int(sqlite3_column_int64(stmt, 8)),
                 activity: columnText(stmt, 9).flatMap(SnapshotActivity.init(rawValue:)),
+                observed: Snapshot.decode(columnText(stmt, 17)),
                 wanted: columnText(stmt, 10).flatMap(SnapshotWant.init(rawValue:)),
                 match: columnText(stmt, 11).flatMap(NudgeFeedback.init(rawValue:)),
                 labeledAt: columnDouble(stmt, 12).map { Date(timeIntervalSince1970: $0) },
                 recheckDue: columnDouble(stmt, 13).map { Date(timeIntervalSince1970: $0) },
                 recheckActivity: columnText(stmt, 14).flatMap(SnapshotActivity.init(rawValue:)),
+                recheckObserved: Snapshot.decode(columnText(stmt, 18)),
                 recheckWanted: columnText(stmt, 15).flatMap(SnapshotWant.init(rawValue:)),
                 recheckAt: columnDouble(stmt, 16).map { Date(timeIntervalSince1970: $0) }
             )
@@ -568,13 +581,15 @@ public final class Store {
         try write("checkin.csv", header: ["at", "question", "answer", "still_minutes", "drift_score"],
                   rows: try checkIns(since: all).map { [ts($0.at), $0.question, $0.answer.rawValue, num($0.stillMinutes, 1), num($0.driftScore, 2)] })
         // 사진 파일 자체는 내보내지 않는다.
-        try write("snapshot.csv", header: ["at", "reason", "rule_id", "variant", "photo_count", "photos_deleted_at", "activity", "wanted",
-                                           "match", "labeled_at", "recheck_activity", "recheck_wanted", "state"],
+        try write("snapshot.csv", header: ["at", "reason", "rule_id", "variant", "photo_count", "photos_deleted_at", "activity", "observed",
+                                           "wanted", "match", "labeled_at", "recheck_activity", "recheck_observed", "recheck_wanted", "state"],
                   rows: try snapshots(since: all).map { s in
                       let state = s.state.keys.sorted().map { "\($0)=\(num(s.state[$0], 3))" }.joined(separator: " ")
                       return [ts(s.at), s.reason.rawValue, s.rule?.rawValue ?? "", s.variant ?? "", "\(s.photos.count)",
-                              s.photosDeletedAt.map(ts) ?? "", s.activity?.rawValue ?? "", s.wanted?.rawValue ?? "",
+                              s.photosDeletedAt.map(ts) ?? "", s.activity?.rawValue ?? "",
+                              Snapshot.encode(s.observed).map { $0.isEmpty ? "none" : $0 } ?? "", s.wanted?.rawValue ?? "",
                               s.match?.rawValue ?? "", s.labeledAt.map(ts) ?? "", s.recheckActivity?.rawValue ?? "",
+                              Snapshot.encode(s.recheckObserved).map { $0.isEmpty ? "none" : $0 } ?? "",
                               s.recheckWanted?.rawValue ?? "", state]
                   })
         try write("tuning_log.csv", header: ["at", "parameter", "old_value", "new_value", "samples", "score_before", "score_after", "note"],

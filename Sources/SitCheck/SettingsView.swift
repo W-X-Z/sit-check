@@ -1,10 +1,13 @@
+import AppKit
 import SwiftUI
 import SitCheckCore
 
 /// 설정: 알림 시간, 바른 자세 판정, 카메라, 기록 삭제
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     @State private var confirmDelete = false
+    @State private var confirmDeletePhotos = false
     @State private var showPreview = false
 
     var body: some View {
@@ -56,7 +59,32 @@ struct SettingsView: View {
             } header: {
                 Text("카메라")
             } footer: {
-                Text("영상은 저장하거나 전송하지 않고, 1초에 한 장씩 얼굴과 눈·어깨 위치만 이 Mac에서 계산해요.")
+                Text("영상은 저장하거나 전송하지 않고, 1초에 한 장씩 얼굴과 눈·어깨 위치만 이 Mac에서 계산해요. 사진 일지를 켜면 하루 몇 장만 이 Mac에 잠시 둬요.")
+            }
+
+            Section {
+                Toggle("사진 일지 사용", isOn: $model.settings.photoDiaryEnabled)
+                if model.settings.photoDiaryEnabled || !model.reviewQueue.isEmpty {
+                    Stepper("하루 최대 \(model.settings.photosPerDay)묶음",
+                            value: $model.settings.photosPerDay, in: 2...15)
+                    Stepper("사진 보관 \(model.settings.photoRetentionDays)일",
+                            value: $model.settings.photoRetentionDays, in: 3...30)
+                    Toggle("답한 뒤에도 보관 기간까지 남기기", isOn: $model.settings.keepLabeledPhotos)
+                    Toggle("답으로 판정값 자동 조정 (하루 한 칸)", isOn: $model.settings.autoTune)
+                    HStack {
+                        Button(model.reviewQueue.isEmpty ? "사진 리뷰 열기" : "사진 리뷰 열기 (\(model.reviewQueue.count))") {
+                            NSApp.activate(ignoringOtherApps: true)
+                            openWindow(id: "review")
+                        }
+                        Spacer()
+                        Button("판정값 처음 값으로") { model.resetTuning() }
+                        Button("사진 지우기", role: .destructive) { confirmDeletePhotos = true }
+                    }
+                }
+            } header: {
+                Text("사진 일지 (판정값 점진 조정)")
+            } footer: {
+                Text("앉아 있는 동안 알림 순간, 판정값 바로 아래인 순간, 무작위 순간에 작은 사진 묶음(앉은 직후 · 몇 분 전 · 지금)을 남겨요. 사진을 보고 '보이는 자세'와 '알림을 원했는지'에 답하면, 답이 쌓이는 대로 거북목·좌우·같은 자세 판정값을 하루 한 칸씩 옮겨요. 사진은 이 Mac에만 두고(백업 제외), 답하면 바로 지우고, 다른 얼굴이 함께 잡히면 찍지 않아요.")
             }
 
             Section {
@@ -71,7 +99,12 @@ struct SettingsView: View {
         .confirmationDialog("착석, 알림, 자세 기록을 모두 지울까요?", isPresented: $confirmDelete) {
             Button("삭제", role: .destructive) { model.deleteAllRecords() }
         } message: {
-            Text("설정은 남아요. 되돌릴 수 없어요.")
+            Text("설정은 남아요. 사진 일지 사진도 함께 지워요. 되돌릴 수 없어요.")
+        }
+        .confirmationDialog("사진 일지 사진을 모두 지울까요?", isPresented: $confirmDeletePhotos) {
+            Button("사진 삭제", role: .destructive) { model.deleteAllPhotos() }
+        } message: {
+            Text("이미 한 답과 판정값 조정 기록은 남아요.")
         }
     }
 }

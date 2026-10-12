@@ -576,20 +576,24 @@ final class SampleDatabaseTests: XCTestCase {
             try store.insert(CheckInRecord(at: r1.addingTimeInterval(900), question: "q", answer: d % 3 == 0 ? .no : .yes,
                                            stillMinutes: Double(d * 3), driftScore: 1))
 
-            // 사진 일지 답 (사진 파일 없이 기록만): 정지 30분 넘을 때만 알림을 원한 사람
+            // 사진 일지 답 (사진 파일 없이 기록만): 정지 30분 넘을 때만 알림을 원하고, 머리가 기준보다 15% 넘게 커졌을 때만
+            // 사진에서 '머리가 앞으로 나옴'을 고른 사람
             let photo = [SnapshotPhoto(slot: "now", at: r1)]
             try store.insert(Snapshot(at: r1.addingTimeInterval(-1200), reason: .random, photos: photo, photosDeletedAt: r1,
-                                      state: [SnapshotKey.stillMinutes: Double(5 + d), SnapshotKey.driftScore: 0.5],
-                                      activity: d % 2 == 0 ? .screen : .lookDown, wanted: .no, labeledAt: r1))
+                                      state: [SnapshotKey.stillMinutes: Double(5 + d), SnapshotKey.headForward: 0.02 * Double(d % 6),
+                                              SnapshotKey.shoulderTilt: Double(d % 3) - 1],
+                                      activity: d % 2 == 0 ? .screen : .lookDown, observed: [], wanted: .no, labeledAt: r1))
             try store.insert(Snapshot(at: r1, reason: .event, rule: .stillness, variant: "20분", photos: photo, photosDeletedAt: r1,
                                       state: [SnapshotKey.stillMinutes: 20, SnapshotKey.shiftK: settings.signals.shiftK],
                                       activity: d % 4 == 0 ? .phone : .screen, wanted: d % 4 == 0 ? .no : .unsure,
                                       match: d % 4 == 0 ? .wrong : .right, labeledAt: r1))
-            try store.insert(Snapshot(at: r1.addingTimeInterval(1500), reason: .random, photos: photo, photosDeletedAt: r1,
-                                      state: [SnapshotKey.stillMinutes: Double(30 + d), SnapshotKey.driftScore: 3.5],
-                                      activity: .sink, wanted: .yes, labeledAt: r1,
-                                      recheckActivity: d == 1 ? .sink : nil, recheckWanted: d == 1 ? .yes : nil,
-                                      recheckAt: d == 1 ? r1.addingTimeInterval(86_400) : nil))
+            try store.insert(Snapshot(at: r1.addingTimeInterval(1500), reason: .event, rule: .forwardHead, variant: "forwardHead",
+                                      photos: photo, photosDeletedAt: r1,
+                                      state: [SnapshotKey.stillMinutes: Double(30 + d), SnapshotKey.headForward: 0.10 + 0.01 * Double(d),
+                                              SnapshotKey.issue(.forwardHead): 1, SnapshotKey.shoulderTilt: 2],
+                                      activity: .sink, observed: d >= 5 ? [.forwardHead] : [], wanted: .yes, labeledAt: r1,
+                                      recheckActivity: d == 1 ? .sink : nil, recheckObserved: d == 1 ? [] : nil,
+                                      recheckWanted: d == 1 ? .yes : nil, recheckAt: d == 1 ? r1.addingTimeInterval(86_400) : nil))
             if d == 1 {
                 try store.insert(Snapshot(at: r1.addingTimeInterval(3000), reason: .nearThreshold, rule: .stillness, photos: photo,
                                           state: [SnapshotKey.stillMinutes: 15]))

@@ -391,10 +391,10 @@ func showLabels(_ d: Dataset) {
         print("아직 사진 일지가 없어요. 설정 > 사진 일지를 켜면 앉아 있는 동안 하루 몇 묶음을 남겨요.")
         return
     }
-    let answered = all.filter { $0.labeledAt != nil && ($0.activity != nil || $0.wanted != nil || $0.match != nil) }
+    let answered = all.filter { $0.labeledAt != nil && $0.isAnswered }
     let skipped = all.filter { $0.labeledAt != nil }.count - answered.count
     let waiting = all.filter { $0.labeledAt == nil && $0.hasPhotos }.count
-    print("사진 묶음 \(all.count)개 · 답함 \(answered.count) · 건너뜀 \(skipped) · 답 기다림 \(waiting) (최근 기록 기준)")
+    print("사진 묶음 \(all.count)개 · 답함 \(answered.count) · 건너뜀 \(skipped) · 답 기다림 \(waiting) (최근 \(Int(Date().timeIntervalSince(d.since) / 86_400))일)")
     table(["찍은 이유", "묶음", "답함", "알림 원함", "원하지 않음", "모름"],
           SnapshotReason.allCases.map { reason in
               let g = answered.filter { $0.reason == reason }
@@ -403,23 +403,32 @@ func showLabels(_ d: Dataset) {
                       "\(g.filter { $0.wanted == .unsure }.count)"]
           })
 
-    title("알림 순간 사진: 감지 내용이 사진과 맞았나")
-    let events = answered.filter { $0.reason == .event }
-    if events.isEmpty {
+    title("바른 자세 판정: 앱 판정과 사진에서 보인 자세")
+    let seen = answered.filter { $0.observed != nil }
+    if seen.isEmpty {
+        print("아직 '보이는 자세' 답이 없어요.")
+    } else {
+        table(["항목", "답", "둘 다 바르지 않음", "앱만 바르지 않음", "사진만 바르지 않음", "둘 다 괜찮음", "앱 판정 정확도", "놓친 비율"],
+              PostureIssue.allCases.map { issue in
+                  let both = seen.filter { $0.flagged.contains(issue) && $0.observed!.contains(issue) }.count
+                  let appOnly = seen.filter { $0.flagged.contains(issue) && !$0.observed!.contains(issue) }.count
+                  let seenOnly = seen.filter { !$0.flagged.contains(issue) && $0.observed!.contains(issue) }.count
+                  let neither = seen.count - both - appOnly - seenOnly
+                  return [issue.title, "\(seen.count)", "\(both)", "\(appOnly)", "\(seenOnly)", "\(neither)",
+                          pct(both + appOnly > 0 ? Double(both) / Double(both + appOnly) : nil),
+                          pct(both + seenOnly > 0 ? Double(seenOnly) / Double(both + seenOnly) : nil)]
+              })
+        print("앱 판정 정확도 = 앱이 바르지 않다고 본 사진 중 실제로도 그렇게 보인 비율. 놓친 비율 = 사진에서 보였는데 앱은 괜찮다고 본 비율.")
+    }
+
+    title("오래 같은 자세 알림 사진: 정말 거의 같은 자세였나")
+    let still = answered.filter { $0.reason == .event && $0.rule == .stillness && $0.match != nil }
+    if still.isEmpty {
         print("아직 없어요.")
     } else {
-        table(["유형", "답함", "맞아요", "아니에요", "자리 바뀜", "정확도", "알림 원함"],
-              cameraRules.compactMap { rule in
-                  let g = events.filter { $0.rule == rule }
-                  guard !g.isEmpty else { return nil }
-                  let right = g.filter { $0.match == .right }.count
-                  let wrong = g.filter { $0.match == .wrong }.count
-                  let wantedAnswers = g.filter { $0.answeredWant != nil }
-                  return [rule.title, "\(g.count)", "\(right)", "\(wrong)", "\(g.filter { $0.match == .setupChanged }.count)",
-                          pct(right + wrong > 0 ? Double(right) / Double(right + wrong) : nil),
-                          pct(wantedAnswers.isEmpty ? nil : Double(wantedAnswers.filter { $0.wanted == .yes }.count) / Double(wantedAnswers.count))]
-              })
-        print("정확도 = 맞아요 ÷ (맞아요 + 아니에요). '알림 원함'은 그 순간 알림을 받았으면 좋았겠다는 답의 비율이에요.")
+        let right = still.filter { $0.match == .right }.count
+        let wrong = still.filter { $0.match == .wrong }.count
+        print("맞아요 \(right) · 아니에요 \(wrong) · 자리 바뀜 \(still.filter { $0.match == .setupChanged }.count) · 정확도 \(pct(right + wrong > 0 ? Double(right) / Double(right + wrong) : nil))")
     }
 
     title("상황별 답 (어떤 상황에서 알림을 원하지 않았나)")
@@ -427,32 +436,34 @@ func showLabels(_ d: Dataset) {
     if labeledActivities.isEmpty {
         print("아직 없어요.")
     } else {
-        table(["상황", "답", "알림 원함", "원하지 않음", "알림 순간 중 '아니에요'"],
+        table(["상황", "답", "알림 원함", "원하지 않음", "앱이 바르지 않다고 봄"],
               SnapshotActivity.allCases.compactMap { activity in
                   let g = labeledActivities.filter { $0.activity == activity }
                   guard !g.isEmpty else { return nil }
                   return [activity.label, "\(g.count)", "\(g.filter { $0.wanted == .yes }.count)",
-                          "\(g.filter { $0.wanted == .no }.count)",
-                          "\(g.filter { $0.reason == .event && $0.match == .wrong }.count)"]
+                          "\(g.filter { $0.wanted == .no }.count)", "\(g.filter { !$0.flagged.isEmpty }.count)"]
               })
+        print("'원하지 않음'이나 '앱이 바르지 않다고 봄'이 몰린 상황(예: 휴대폰, 내려다봄)은 판정이 헷갈리는 상황일 수 있어요.")
     }
 
     title("판정값: 답을 가장 잘 가르는 값")
-    let evals = GradualTuner.evaluate(answered, params: d.settings.signals)
-    table(["값", "답 (네/아니요)", "지금", "지금 점수", "가장 나은 값", "그 점수", "다음 조정"],
+    let evals = GradualTuner.evaluate(answered, settings: d.settings)
+    table(["값", "답 (그렇다/아니다)", "지금", "지금 점수", "가장 나은 값", "그 점수", "다음 조정"],
           evals.map { e in
-              ["\(e.title)", "\(e.samples) (\(e.yes)/\(e.no))", f(e.current), f(e.currentScore, 2), f(e.best), f(e.bestScore, 2),
-               e.next.map { "→ \(f($0))" } ?? (e.ready ? "그대로" : "답 모으는 중")]
+              let digits = e.current < 1 ? 2 : 1
+              return ["\(e.title)", "\(e.samples) (\(e.yes)/\(e.no))", f(e.current, digits), f(e.currentScore, 2),
+                      f(e.best, digits), f(e.bestScore, 2),
+                      !e.enabled ? "꺼져 있음" : e.next.map { "→ \(f($0, digits))" } ?? (e.ready ? "그대로" : "답 모으는 중")]
           })
-    print("점수 = 균형 정확도 (알림을 원한 순간을 잡은 비율과 원하지 않은 순간을 거른 비율의 평균).")
-    print("답이 12개 이상, 네·아니요가 각각 4개 이상이고 0.05 이상 나을 때만 하루 한 칸 옮겨요 (설정 > 사진 일지 > 자동 조정).")
+    print("바른 자세 항목은 '보이는 자세'에 그 항목을 골랐는지, 같은 자세는 '알림을 원했는지'를 정답으로 써요.")
+    print("점수 = 균형 정확도. 답 12개 이상(그렇다·아니다 각 4개 이상)이고 0.05 이상 나을 때만 하루 한 칸 옮겨요 (설정 > 사진 일지 > 자동 조정).")
     let m = GradualTuner.stillnessMatch(answered, shiftK: d.settings.signals.shiftK)
     print("'오래 같은 자세' 감지가 사진과 맞음 \(m.right) · 다름 \(m.wrong) (지금 자세 변화 기준 \(f(d.settings.signals.shiftK))배로 찍은 것). 다름이 30% 넘고 8개 이상이면 기준을 0.5씩 낮춰요.")
 
     let agreement = SnapshotAgreement.recheck(all)
-    print("\n다시 보기 \(agreement.count)개 · 같은 상황 답 \(pct(agreement.activity)) · 같은 '알림 원함' 답 \(pct(agreement.wanted))")
-    if agreement.count >= 5, let w = agreement.wanted, w < 0.7 {
-        print("  '알림 원함' 답이 자주 바뀌어요. 조정이 흔들릴 수 있으니 자동 조정을 끄고 지켜봐도 돼요.")
+    print("\n다시 보기 \(agreement.count)개 · 같은 '보이는 자세' 답 \(pct(agreement.observed)) · 같은 상황 답 \(pct(agreement.activity)) · 같은 '알림 원함' 답 \(pct(agreement.wanted))")
+    if agreement.count >= 5, let o = agreement.observed, o < 0.7 {
+        print("  '보이는 자세' 답이 자주 바뀌어요. 조정이 흔들릴 수 있으니 자동 조정을 끄고 지켜봐도 돼요.")
     }
 
     title("판정값 조정 기록")
@@ -461,7 +472,7 @@ func showLabels(_ d: Dataset) {
     } else {
         table(["날짜", "값", "이전", "이후", "답", "점수 전→후", "메모"],
               d.tuning.map { c in
-                  [timeFormatter.string(from: c.at), c.parameter, f(c.oldValue), f(c.newValue), "\(c.samples)",
+                  [timeFormatter.string(from: c.at), c.parameter, f(c.oldValue, 2), f(c.newValue, 2), "\(c.samples)",
                    "\(f(c.scoreBefore, 2))→\(f(c.scoreAfter, 2))", c.note]
               })
     }

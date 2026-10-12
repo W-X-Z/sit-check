@@ -44,6 +44,12 @@ struct MenuContentView: View {
                     NSApp.activate(ignoringOtherApps: true)
                     openWindow(id: "settings")
                 }
+                if model.settings.photoDiaryEnabled || !model.reviewQueue.isEmpty {
+                    Button(model.reviewQueue.isEmpty ? "사진 리뷰…" : "사진 리뷰 (\(model.reviewQueue.count))…") {
+                        NSApp.activate(ignoringOtherApps: true)
+                        openWindow(id: "review")
+                    }
+                }
                 Spacer()
                 Button("종료") { NSApp.terminate(nil) }
             }

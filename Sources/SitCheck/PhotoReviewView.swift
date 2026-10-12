@@ -2,11 +2,13 @@ import AppKit
 import SwiftUI
 import SitCheckCore
 
-/// 사진 일지 리뷰: 실제로 일하던 순간의 사진을 보고 '무엇을 하고 있었나', '알림을 받았으면 좋았을까'에 답한다.
+/// 사진 일지 리뷰: 실제로 일하던 순간의 사진을 보고 '보이는 자세', '무엇을 하고 있었나', '알림을 받았으면 좋았을까'에 답한다.
 /// 답은 판정값을 하루 한 칸씩 옮기는 데 쓰고, 사진은 답하면 지운다.
 struct PhotoReviewView: View {
     @EnvironmentObject private var model: AppModel
     @State private var activity: SnapshotActivity?
+    /// nil = 아직 고르지 않음, 빈 집합 = '해당 없음'
+    @State private var observed: Set<PostureIssue>?
     @State private var wanted: SnapshotWant?
     @State private var match: NudgeFeedback?
 
@@ -100,6 +102,24 @@ struct PhotoReviewView: View {
     private func questions(_ snapshot: Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
+                Text("'이 순간' 사진에서 보이는 자세를 모두 골라 주세요").font(.headline)
+                HStack(spacing: 6) {
+                    ForEach(PostureIssue.allCases, id: \.self) { issue in
+                        choice(Self.seenLabel(issue), selected: observed?.contains(issue) == true) {
+                            var set = observed ?? []
+                            if set.contains(issue) { set.remove(issue) } else { set.insert(issue) }
+                            observed = set
+                        }
+                    }
+                    choice("해당 없음", selected: observed == []) {
+                        observed = observed == [] ? nil : []
+                    }
+                }
+                Text("앱의 판정과 상관없이 사진에 보이는 대로 골라 주세요. '앉은 직후' 사진과 비교하면 쉬워요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
                 Text("'이 순간' 사진에서 무엇을 하고 있었나요?").font(.headline)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), alignment: .leading, spacing: 6) {
                     ForEach(SnapshotActivity.allCases, id: \.self) { option in
@@ -110,7 +130,7 @@ struct PhotoReviewView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("이 순간 '잠깐 움직여 보세요' 알림을 받았으면 좋았을까요?").font(.headline)
+                Text("이 순간 알림을 받았으면 좋았을까요?").font(.headline)
                 HStack(spacing: 6) {
                     ForEach(SnapshotWant.allCases, id: \.self) { option in
                         choice(option.label, selected: wanted == option) {
@@ -118,13 +138,10 @@ struct PhotoReviewView: View {
                         }
                     }
                 }
-                Text("바른 자세인지가 아니라, 그때 알림을 원했을지만 골라 주세요. 앞의 사진들과 비교해 보면 쉬워요.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
-            if snapshot.reason == .event, snapshot.labeledAt == nil {
+            if snapshot.reason == .event, snapshot.rule == .stillness, snapshot.labeledAt == nil {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("감지 내용이 사진과 맞나요?").font(.headline)
+                    Text("그때까지 정말 거의 같은 자세였나요? (앞의 사진들과 비교)").font(.headline)
                     HStack(spacing: 6) {
                         ForEach(NudgeFeedback.allCases, id: \.self) { option in
                             choice(option.label, selected: match == option) {
@@ -140,13 +157,13 @@ struct PhotoReviewView: View {
     private func actions(_ snapshot: Snapshot) -> some View {
         HStack {
             Button("저장하고 다음") {
-                model.submitReview(snapshot, activity: activity, wanted: wanted, match: match)
+                model.submitReview(snapshot, activity: activity, observed: observed, wanted: wanted, match: match)
                 resetAnswers()
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(activity == nil && wanted == nil && match == nil)
+            .disabled(activity == nil && observed == nil && wanted == nil && match == nil)
             Button("건너뛰기 (사진 지움)") {
-                model.submitReview(snapshot, activity: nil, wanted: nil, match: nil)
+                model.submitReview(snapshot, activity: nil, observed: nil, wanted: nil, match: nil)
                 resetAnswers()
             }
             Spacer()
@@ -164,8 +181,19 @@ struct PhotoReviewView: View {
 
     private func resetAnswers() {
         activity = nil
+        observed = nil
         wanted = nil
         match = nil
+    }
+
+    /// 사진에서 고르는 말 (앱 판정 이름 대신 보이는 모습으로)
+    static func seenLabel(_ issue: PostureIssue) -> String {
+        switch issue {
+        case .forwardHead: return "머리가 앞으로 나옴"
+        case .shoulderTilt: return "어깨가 한쪽으로 기욺"
+        case .headTilt: return "고개가 기욺"
+        case .sideLean: return "몸이 한쪽으로 치우침"
+        }
     }
 
     // MARK: - 빈 화면, 조정 기록
@@ -183,16 +211,17 @@ struct PhotoReviewView: View {
     private var tuningSummary: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("판정값").font(.caption.bold()).foregroundStyle(.secondary)
-            let p = model.settings.signals
-            Text(String(format: "오래 같은 자세 %d분 · 아래로·가까이 %.1f배 · 자세 변화 %.1f배", p.stillMinutes, p.driftK, p.shiftK)
-                 + (model.settings.distanceCalibration != nil ? String(format: " · 가까움 %.1f cm", p.nearCm) : ""))
+            let c = model.settings.postureCheck
+            Text(String(format: "거북목 %.0f%% · 어깨 %.0f° · 고개 %.0f° · 치우침 %.0f%% · 같은 자세 %d분",
+                        c.forwardHeadRatio * 100, c.shoulderTiltDegrees, c.headTiltDegrees, c.sideLeanRatio * 100,
+                        model.settings.signals.stillMinutes))
                 .font(.callout)
             if let last = model.tuningLog.last {
                 Text("최근 조정 \(last.at.formatted(date: .abbreviated, time: .omitted)): \(changeText(last))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text(model.settings.autoTune ? "아직 조정 없음. 네/아니요 답이 12개 이상(각각 4개 이상) 모이면 하루 한 칸씩 옮겨요."
+                Text(model.settings.autoTune ? "아직 조정 없음. 항목마다 답이 12개 이상(그렇다·아니다 각각 4개 이상) 모이면 하루 한 칸씩 옮겨요."
                                              : "자동 조정이 꺼져 있어요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -206,7 +235,7 @@ struct PhotoReviewView: View {
     }
 
     private func trim(_ v: Double) -> String {
-        v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v)
+        v == v.rounded() ? String(Int(v)) : String(format: "%.2f", v)
     }
 
     private var footerText: String {

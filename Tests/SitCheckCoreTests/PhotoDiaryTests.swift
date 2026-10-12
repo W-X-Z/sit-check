@@ -9,16 +9,21 @@ private let utc: Calendar = {
 }()
 
 private func input(_ minutesAfter: Double, bout: Date? = t0, sitting: Double = 30, events: [SignalEvent] = [],
-                   still: Double? = nil, drift: Double? = nil, roll: Double = 1) -> SnapshotPlanner.Input {
+                   near: [SnapshotPlanner.Decision] = [], roll: Double = 1) -> SnapshotPlanner.Input {
     SnapshotPlanner.Input(now: t0.addingTimeInterval(minutesAfter * 60), boutStart: bout, sittingMinutes: sitting,
-                          events: events, stillMinutes: still, driftScore: drift, params: SignalParameters(), roll: roll)
+                          events: events, near: near, roll: roll)
 }
 
 private func stillEvent(_ variant: String = "20분", actionable: Bool = true) -> SignalEvent {
     SignalEvent(rule: .stillness, at: t0, variant: variant, actionable: actionable, detail: [:])
 }
 
-/// 판정값 조정용 답 하나
+private func nearStill(_ still: Double) -> [SnapshotPlanner.Decision] {
+    SnapshotPlanner.nearCandidates(stillMinutes: still, signals: SignalParameters(), reading: nil,
+                                   check: PostureCheckParameters(), flagged: [])
+}
+
+/// '알림 원함' 답 하나
 private func answer(_ key: String, _ x: Double, _ wanted: SnapshotWant, reason: SnapshotReason = .random,
                     rule: NudgeRule? = nil, match: NudgeFeedback? = nil, extra: [String: Double] = [:]) -> Snapshot {
     var state = extra
@@ -27,7 +32,13 @@ private func answer(_ key: String, _ x: Double, _ wanted: SnapshotWant, reason: 
                     wanted: wanted, match: match, labeledAt: t0)
 }
 
-/// 정지 30분 이상일 때만 알림을 원한 답 14개
+/// "사진에서 보이는 자세" 답 하나
+private func seen(_ key: String, _ x: Double, _ observed: Set<PostureIssue>) -> Snapshot {
+    Snapshot(at: t0, reason: .random, photos: [SnapshotPhoto(slot: "now", at: t0)], state: [key: x],
+             observed: observed, labeledAt: t0)
+}
+
+/// 정지 30분 이상일 때만 알림을 원한 답 15개
 private func stillAnswers() -> [Snapshot] {
     let no: [Double] = [5, 8, 10, 12, 15, 18, 20, 22, 25, 28]
     let yes: [Double] = [31, 35, 40, 45, 50]
@@ -49,21 +60,36 @@ final class SnapshotPlannerTests: XCTestCase {
 
         XCTAssertNil(planner.decide(input(62, events: [stillEvent("45분", actionable: false)])), "규칙별 하루 2장")
         let drift = SignalEvent(rule: .drift, at: t0, variant: "아래로", actionable: true, detail: [:])
-        XCTAssertEqual(planner.decide(input(62, events: [drift]))?.rule, .drift)
+        XCTAssertNil(planner.decide(input(62, events: [drift])), "카드가 뜨지 않는 규칙(R6)은 찍지 않는다")
+        let head = SignalEvent(rule: .forwardHead, at: t0, variant: "forwardHead", actionable: true, detail: [:])
+        XCTAssertEqual(planner.decide(input(62, events: [head]))?.rule, .forwardHead)
         XCTAssertEqual(planner.takenToday, 2)
     }
 
     func testNearThresholdOncePerBout() {
         var planner = SnapshotPlanner(perDay: 8)
         planner.calendar = utc
-        XCTAssertNil(planner.decide(input(20, still: 13)), "판정값(20분)의 70% 미만")
-        let near = planner.decide(input(20, still: 15))
+        XCTAssertTrue(nearStill(13).isEmpty, "판정값(20분)의 70% 미만")
+        let near = planner.decide(input(20, near: nearStill(15)))
         XCTAssertEqual(near, SnapshotPlanner.Decision(reason: .nearThreshold, rule: .stillness))
         planner.taken(near!, at: t0.addingTimeInterval(20 * 60), boutStart: t0)
-        XCTAssertNil(planner.decide(input(40, still: 16)), "같은 착석 구간에서는 한 번")
+        XCTAssertNil(planner.decide(input(40, near: nearStill(16))), "같은 착석 구간에서는 한 번")
         let otherBout = t0.addingTimeInterval(3600)
-        XCTAssertEqual(planner.decide(input(90, bout: otherBout, still: 16))?.reason, .nearThreshold)
-        XCTAssertEqual(planner.decide(input(90, bout: otherBout, drift: 2.0))?.rule, .drift, "R6 기준 3σ의 60% 이상")
+        XCTAssertEqual(planner.decide(input(90, bout: otherBout, near: nearStill(16)))?.reason, .nearThreshold)
+    }
+
+    func testNearCandidatesForPostureIssues() {
+        // 거북목 판정값 10%의 70% 이상(8%), 어깨 7°의 70% 이상(-5.5°), 고개는 아직 멀고, 몸 치우침은 이미 바르지 않음으로 봄
+        let reading = PostureReading(shoulderTilt: -5.5, headTilt: 2, sideLean: 0.3, headForward: 0.08, neckDrop: 0)
+        let near = SnapshotPlanner.nearCandidates(stillMinutes: 5, signals: SignalParameters(), reading: reading,
+                                                  check: PostureCheckParameters(), flagged: [.sideLean])
+        XCTAssertEqual(near.map(\.variant), ["forwardHead", "shoulderTilt"])
+        XCTAssertEqual(near.map(\.rule), [.forwardHead, .asymmetry])
+        var check = PostureCheckParameters()
+        check.asymmetry = false
+        XCTAssertEqual(SnapshotPlanner.nearCandidates(stillMinutes: nil, signals: SignalParameters(), reading: reading,
+                                                      check: check, flagged: []).map(\.variant), ["forwardHead"],
+                       "꺼 둔 항목은 찍지 않는다")
     }
 
     func testRandomNeedsSittingAndRoll() {
@@ -92,70 +118,84 @@ final class SnapshotPlannerTests: XCTestCase {
 final class GradualTunerTests: XCTestCase {
     func testBalancedAccuracy() {
         let pts: [(x: Double, yes: Bool)] = [(10, false), (20, false), (30, true), (40, true)]
-        XCTAssertEqual(GradualTuner.balancedAccuracy(pts, threshold: 25, firesAbove: true), 1)
-        XCTAssertEqual(GradualTuner.balancedAccuracy(pts, threshold: 35, firesAbove: true), 0.75)
-        XCTAssertEqual(GradualTuner.balancedAccuracy(pts, threshold: 25, firesAbove: false), 0)
-        XCTAssertNil(GradualTuner.balancedAccuracy([(10, true)], threshold: 5, firesAbove: true))
+        XCTAssertEqual(GradualTuner.balancedAccuracy(pts, threshold: 25), 1)
+        XCTAssertEqual(GradualTuner.balancedAccuracy(pts, threshold: 35), 0.75)
+        XCTAssertNil(GradualTuner.balancedAccuracy([(10, true)], threshold: 5))
     }
 
     func testStillMinutesMovesOneStepPerDay() throws {
         let answers = stillAnswers()
-        var params = SignalParameters()
-        XCTAssertEqual(params.stillMinutes, 20)
+        var settings = AppSettings.default
+        XCTAssertEqual(settings.signals.stillMinutes, 20)
 
-        let eval = try XCTUnwrap(GradualTuner.evaluate(answers, params: params).first { $0.parameter == "stillMinutes" })
+        let eval = try XCTUnwrap(GradualTuner.evaluate(answers, settings: settings).first { $0.parameter == "stillMinutes" })
         XCTAssertTrue(eval.ready)
         XCTAssertEqual(eval.best, 30)
         XCTAssertEqual(eval.bestScore, 1)
         XCTAssertEqual(eval.next, 25)
 
-        var history = GradualTuner.tune(answers, params: &params, history: [], now: t0, calendar: utc)
-        XCTAssertEqual(params.stillMinutes, 25, "하루 한 칸")
+        var history = GradualTuner.tune(answers, settings: &settings, history: [], now: t0, calendar: utc)
+        XCTAssertEqual(settings.signals.stillMinutes, 25, "하루 한 칸")
         XCTAssertEqual(history.map(\.parameter), ["stillMinutes"])
         XCTAssertEqual(history.first?.oldValue, 20)
 
-        XCTAssertTrue(GradualTuner.tune(answers, params: &params, history: history, now: t0.addingTimeInterval(3600), calendar: utc).isEmpty,
+        XCTAssertTrue(GradualTuner.tune(answers, settings: &settings, history: history, now: t0.addingTimeInterval(3600), calendar: utc).isEmpty,
                       "같은 날 두 번 옮기지 않는다")
-        history += GradualTuner.tune(answers, params: &params, history: history, now: t0.addingTimeInterval(86_400), calendar: utc)
-        XCTAssertEqual(params.stillMinutes, 30)
-        XCTAssertTrue(GradualTuner.tune(answers, params: &params, history: history, now: t0.addingTimeInterval(2 * 86_400), calendar: utc).isEmpty,
+        history += GradualTuner.tune(answers, settings: &settings, history: history, now: t0.addingTimeInterval(86_400), calendar: utc)
+        XCTAssertEqual(settings.signals.stillMinutes, 30)
+        XCTAssertTrue(GradualTuner.tune(answers, settings: &settings, history: history, now: t0.addingTimeInterval(2 * 86_400), calendar: utc).isEmpty,
                       "가장 나은 값에 닿으면 멈춘다")
     }
 
+    func testForwardHeadRatioFollowsWhatTheUserSees() {
+        // 기준 대비 15% 넘게 커졌을 때만 사진에서 '머리가 앞으로 나옴'을 고름. 지금 10% → 12%로 한 칸
+        let no: [Double] = [-0.02, 0.0, 0.03, 0.05, 0.08, 0.10, 0.11, 0.12, 0.13]
+        let yes: [Double] = [0.16, 0.18, 0.22, 0.25]
+        let answers = no.map { seen(SnapshotKey.headForward, $0, []) } + yes.map { seen(SnapshotKey.headForward, $0, [.forwardHead]) }
+        var settings = AppSettings.default
+        let changes = GradualTuner.tune(answers, settings: &settings, history: [], now: t0, calendar: utc)
+        XCTAssertEqual(changes.map(\.parameter), ["forwardHeadRatio"])
+        XCTAssertEqual(settings.postureCheck.forwardHeadRatio, 0.12, accuracy: 1e-9)
+    }
+
+    func testTiltUsesMagnitudeAndRespectsDisabledIssues() {
+        // 어깨가 어느 쪽으로든 4° 넘게 기울었을 때 '어깨가 한쪽으로 기욺'을 고름. 지금 7° → 6°로 한 칸
+        let no: [Double] = [0, 1, -1, 2, -2, 3, -3, 3.5]
+        let yes: [Double] = [4.5, -5, 6, -6.5]
+        let answers = no.map { seen(SnapshotKey.shoulderTilt, $0, []) } + yes.map { seen(SnapshotKey.shoulderTilt, $0, [.shoulderTilt]) }
+        var settings = AppSettings.default
+        _ = GradualTuner.tune(answers, settings: &settings, history: [], now: t0, calendar: utc)
+        XCTAssertEqual(settings.postureCheck.shoulderTiltDegrees, 6)
+
+        var off = AppSettings.default
+        off.postureCheck.asymmetry = false
+        XCTAssertTrue(GradualTuner.tune(answers, settings: &off, history: [], now: t0, calendar: utc).isEmpty,
+                      "꺼 둔 판정은 옮기지 않는다")
+    }
+
     func testNeedsEnoughAnswersOfBothKinds() {
-        var params = SignalParameters()
+        var settings = AppSettings.default
         let fewNo = (0..<3).map { answer(SnapshotKey.stillMinutes, Double($0), .no) }
             + (0..<10).map { answer(SnapshotKey.stillMinutes, 40 + Double($0), .yes) }
-        XCTAssertTrue(GradualTuner.tune(fewNo, params: &params, history: [], now: t0, calendar: utc).isEmpty)
+        XCTAssertTrue(GradualTuner.tune(fewNo, settings: &settings, history: [], now: t0, calendar: utc).isEmpty)
         let unsure = stillAnswers().map { s -> Snapshot in
             var s = s
             s.wanted = .unsure
             return s
         }
-        XCTAssertTrue(GradualTuner.tune(unsure, params: &params, history: [], now: t0, calendar: utc).isEmpty)
-        XCTAssertEqual(params, SignalParameters())
+        XCTAssertTrue(GradualTuner.tune(unsure, settings: &settings, history: [], now: t0, calendar: utc).isEmpty)
+        XCTAssertEqual(settings, AppSettings.default)
     }
 
     func testOnlyRandomAndSameRuleAnswersCount() {
-        // 다른 규칙(R6) 알림 순간의 '네'와 감지가 틀렸다는 답은 R5 판정값에 쓰지 않는다.
-        let noise = (0..<6).map { _ in answer(SnapshotKey.stillMinutes, 5, .yes, reason: .event, rule: .drift) }
+        // 다른 규칙 알림 순간의 '네'와 감지가 틀렸다는 답은 R5 판정값에 쓰지 않는다.
+        let noise = (0..<6).map { _ in answer(SnapshotKey.stillMinutes, 5, .yes, reason: .event, rule: .forwardHead) }
             + (0..<6).map { _ in answer(SnapshotKey.stillMinutes, 50, .no, reason: .event, rule: .stillness, match: .wrong) }
-        var params = SignalParameters()
-        let eval = GradualTuner.evaluate(stillAnswers() + noise, params: params).first { $0.parameter == "stillMinutes" }
+        var settings = AppSettings.default
+        let eval = GradualTuner.evaluate(stillAnswers() + noise, settings: settings).first { $0.parameter == "stillMinutes" }
         XCTAssertEqual(eval?.samples, 15)
-        _ = GradualTuner.tune(stillAnswers() + noise, params: &params, history: [], now: t0, calendar: utc)
-        XCTAssertEqual(params.stillMinutes, 25)
-    }
-
-    func testNearCmFiresBelowThreshold() {
-        // 45 cm보다 가까울 때만 알림을 원함. 지금 판정값 40 cm → 42.5 cm로 한 칸
-        let no: [Double] = [48, 50, 52, 55, 58, 60, 65]
-        let yes: [Double] = [35, 38, 41, 43, 44]
-        let answers = no.map { answer(SnapshotKey.distanceCm, $0, .no) } + yes.map { answer(SnapshotKey.distanceCm, $0, .yes) }
-        var params = SignalParameters()
-        let changes = GradualTuner.tune(answers, params: &params, history: [], now: t0, calendar: utc)
-        XCTAssertEqual(changes.map(\.parameter), ["nearCm"])
-        XCTAssertEqual(params.nearCm, 42.5)
+        _ = GradualTuner.tune(stillAnswers() + noise, settings: &settings, history: [], now: t0, calendar: utc)
+        XCTAssertEqual(settings.signals.stillMinutes, 25)
     }
 
     func testShiftKLowersWhenStillnessDetectionOftenWrong() {
@@ -164,18 +204,28 @@ final class GradualTunerTests: XCTestCase {
             answer(SnapshotKey.stillMinutes, 20, .unsure, reason: .event, rule: .stillness,
                    match: i < 6 ? .wrong : .right, extra: [SnapshotKey.shiftK: shift])
         }
-        var params = SignalParameters()
-        var history = GradualTuner.tune(events, params: &params, history: [], now: t0, calendar: utc)
-        XCTAssertEqual(params.shiftK, shift - 0.5)
+        var settings = AppSettings.default
+        var history = GradualTuner.tune(events, settings: &settings, history: [], now: t0, calendar: utc)
+        XCTAssertEqual(settings.signals.shiftK, shift - 0.5)
         XCTAssertEqual(history.map(\.parameter), ["shiftK"])
-        history += GradualTuner.tune(events, params: &params, history: history, now: t0.addingTimeInterval(86_400), calendar: utc)
-        XCTAssertEqual(params.shiftK, shift - 0.5, "이전 기준으로 찍은 답은 다시 쓰지 않는다")
+        history += GradualTuner.tune(events, settings: &settings, history: history, now: t0.addingTimeInterval(86_400), calendar: utc)
+        XCTAssertEqual(settings.signals.shiftK, shift - 0.5, "이전 기준으로 찍은 답은 다시 쓰지 않는다")
     }
 
-    func testResetBlocksTuningThatDay() {
-        var params = SignalParameters()
+    func testResetBlocksTuningThatDayAndRestoresDefaults() {
+        var settings = AppSettings.default
         let reset = TuningChange(at: t0, parameter: "reset", oldValue: 0, newValue: 0, samples: 0, note: "되돌리기")
-        XCTAssertTrue(GradualTuner.tune(stillAnswers(), params: &params, history: [reset], now: t0.addingTimeInterval(60), calendar: utc).isEmpty)
+        XCTAssertTrue(GradualTuner.tune(stillAnswers(), settings: &settings, history: [reset], now: t0.addingTimeInterval(60), calendar: utc).isEmpty)
+
+        settings.signals.stillMinutes = 35
+        settings.postureCheck.forwardHeadRatio = 0.16
+        settings.postureCheck.cardAfterMinutes = 4
+        settings.postureCheck.asymmetry = false
+        GradualTuner.reset(&settings)
+        XCTAssertEqual(settings.signals.stillMinutes, 20)
+        XCTAssertEqual(settings.postureCheck.forwardHeadRatio, 0.10)
+        XCTAssertEqual(settings.postureCheck.cardAfterMinutes, 4, "판정값이 아닌 설정은 그대로")
+        XCTAssertFalse(settings.postureCheck.asymmetry)
     }
 }
 
@@ -183,8 +233,10 @@ final class SnapshotModelTests: XCTestCase {
     func testReviewAndRecheckState() {
         var s = Snapshot(at: t0, reason: .random, photos: [SnapshotPhoto(slot: "now", at: t0)])
         XCTAssertTrue(s.needsReview(at: t0))
+        XCTAssertFalse(s.isAnswered)
         s.labeledAt = t0
-        s.wanted = .no
+        s.observed = []
+        XCTAssertTrue(s.isAnswered, "'해당 없음'도 답이다")
         XCTAssertFalse(s.needsReview(at: t0))
         s.recheckDue = t0.addingTimeInterval(2 * 86_400)
         XCTAssertFalse(s.needsReview(at: t0.addingTimeInterval(86_400)))
@@ -196,30 +248,43 @@ final class SnapshotModelTests: XCTestCase {
         XCTAssertFalse(s.needsReview(at: t0.addingTimeInterval(3 * 86_400)), "사진이 없으면 보여 주지 않는다")
     }
 
-    func testFactsStateValuesOnly() {
-        let s = Snapshot(at: t0, reason: .event, rule: .stillness, variant: "20분", photos: [],
-                         state: [SnapshotKey.sittingMinutes: 35.2, SnapshotKey.stillMinutes: 21,
-                                 SnapshotKey.driftLower: 1.24, SnapshotKey.driftCloser: -0.3])
-        XCTAssertEqual(SnapshotCopy.facts(s), ["앉은 지 35분", "감지: 마지막 자세 변화 뒤 21분",
-                                               "감지: 앉은 직후보다 아래로 1.2 · 가까이 -0.3 (흔들림의 배수)"])
-        XCTAssertEqual(SnapshotCopy.eventLine(s), "'오래 같은 자세 (20분)' 알림이 울렸을 순간이에요")
+    func testIssueEncoding() {
+        XCTAssertNil(Snapshot.encode(nil))
+        XCTAssertEqual(Snapshot.encode([]), "")
+        XCTAssertEqual(Snapshot.encode([.sideLean, .forwardHead]), "forwardHead,sideLean")
+        XCTAssertEqual(Snapshot.decode(""), [])
+        XCTAssertEqual(Snapshot.decode("forwardHead,sideLean"), [.forwardHead, .sideLean])
+        XCTAssertNil(Snapshot.decode(nil))
+    }
+
+    func testFactsShowWhatTheAppSaw() {
+        var state: [String: Double] = [SnapshotKey.sittingMinutes: 35.2, SnapshotKey.stillMinutes: 21]
+        state.merge(PostureReading(shoulderTilt: 0.2, headTilt: 0.1, sideLean: 0.01, headForward: 0.14, neckDrop: 0).detail) { $1 }
+        state[SnapshotKey.issue(.forwardHead)] = 1
+        let s = Snapshot(at: t0, reason: .event, rule: .forwardHead, variant: "forwardHead", photos: [], state: state)
+        XCTAssertEqual(s.flagged, [.forwardHead])
+        let facts = SnapshotCopy.facts(s)
+        XCTAssertEqual(facts.first, "앉은 지 35분")
+        XCTAssertTrue(facts.contains("거북목: 머리가 기준보다 앞으로 14% → 앱 판정: 바르지 않음"), "\(facts)")
+        XCTAssertTrue(facts.contains("어깨 수평: 어깨 수평"), "\(facts)")
+        XCTAssertEqual(SnapshotCopy.eventLine(s), "'거북목' 알림이 울린 순간이에요")
+        let still = Snapshot(at: t0, reason: .event, rule: .stillness, variant: "20분", photos: [])
+        XCTAssertEqual(SnapshotCopy.eventLine(still), "'오래 같은 자세 (20분)' 알림이 울린 순간이에요")
         let photo = SnapshotPhoto(slot: "m10", at: t0.addingTimeInterval(-600))
         XCTAssertEqual(SnapshotCopy.slotTitle(photo, snapshotAt: t0), "10분 전")
-        for text in SnapshotCopy.facts(s) + [SnapshotCopy.eventLine(s) ?? ""] {
-            for word in ["나쁜", "바른", "교정", "고치"] { XCTAssertFalse(text.contains(word), text) }
-        }
     }
 
     func testRecheckAgreement() {
-        func pair(_ a: SnapshotActivity, _ b: SnapshotActivity, _ w1: SnapshotWant, _ w2: SnapshotWant) -> Snapshot {
-            Snapshot(at: t0, reason: .random, photos: [], activity: a, wanted: w1, labeledAt: t0,
-                     recheckActivity: b, recheckWanted: w2, recheckAt: t0)
+        func pair(_ a: SnapshotActivity, _ b: SnapshotActivity, _ o1: Set<PostureIssue>, _ o2: Set<PostureIssue>) -> Snapshot {
+            Snapshot(at: t0, reason: .random, photos: [], activity: a, observed: o1, labeledAt: t0,
+                     recheckActivity: b, recheckObserved: o2, recheckAt: t0)
         }
-        let r = SnapshotAgreement.recheck([pair(.screen, .screen, .no, .no), pair(.sink, .lookDown, .yes, .no),
+        let r = SnapshotAgreement.recheck([pair(.screen, .screen, [], []), pair(.sink, .lookDown, [.forwardHead], []),
                                            Snapshot(at: t0, reason: .random, photos: [])])
         XCTAssertEqual(r.count, 2)
         XCTAssertEqual(r.activity, 0.5)
-        XCTAssertEqual(r.wanted, 0.5)
+        XCTAssertEqual(r.observed, 0.5)
+        XCTAssertNil(r.wanted)
     }
 }
 
@@ -261,20 +326,23 @@ final class StoreV3Tests: XCTestCase {
     func testSnapshotAndTuningRoundTrip() throws {
         let store = try Store(path: ":memory:")
         XCTAssertEqual(try store.userVersion(), 3)
-        let s = Snapshot(at: t0, reason: .event, rule: .drift, variant: "아래로",
+        let s = Snapshot(at: t0, reason: .event, rule: .forwardHead, variant: "forwardHead",
                          photos: [SnapshotPhoto(slot: "ref", at: t0.addingTimeInterval(-1800)), SnapshotPhoto(slot: "now", at: t0)],
-                         state: [SnapshotKey.driftScore: 3.4, SnapshotKey.sittingMinutes: 31], settingsVersion: 9)
+                         state: [SnapshotKey.headForward: 0.14, SnapshotKey.issue(.forwardHead): 1, SnapshotKey.sittingMinutes: 31],
+                         settingsVersion: 9)
         let id = try store.insert(s)
         var loaded = try XCTUnwrap(try store.snapshots(since: t0.addingTimeInterval(-60)).first)
         XCTAssertEqual(loaded.id, id)
         loaded.id = nil
         XCTAssertEqual(loaded, s)
 
-        try store.updateSnapshotLabel(id: id, activity: .lookDown, wanted: .no, match: .wrong, labeledAt: t0.addingTimeInterval(600),
-                                      recheckDue: t0.addingTimeInterval(2 * 86_400))
-        try store.updateSnapshotRecheck(id: id, activity: .lookDown, wanted: .yes, at: t0.addingTimeInterval(3 * 86_400))
+        try store.updateSnapshotLabel(id: id, activity: .lookDown, observed: [.forwardHead, .headTilt], wanted: .no, match: .wrong,
+                                      labeledAt: t0.addingTimeInterval(600), recheckDue: t0.addingTimeInterval(2 * 86_400))
+        try store.updateSnapshotRecheck(id: id, activity: .lookDown, observed: [], wanted: .yes, at: t0.addingTimeInterval(3 * 86_400))
         loaded = try XCTUnwrap(try store.snapshotsWithPhotos().first)
         XCTAssertEqual(loaded.activity, .lookDown)
+        XCTAssertEqual(loaded.observed, [.forwardHead, .headTilt])
+        XCTAssertEqual(loaded.recheckObserved, [], "'해당 없음'은 빈 집합으로 남는다")
         XCTAssertEqual(loaded.wanted, .no)
         XCTAssertEqual(loaded.match, .wrong)
         XCTAssertEqual(loaded.recheckWanted, .yes)
